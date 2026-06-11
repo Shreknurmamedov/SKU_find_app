@@ -1,0 +1,3 @@
+sku_id,brand_id,brand_name,is_own_brand,category,model_name,article_codes,barcodes,aliases,reference_images
+HUTER_EXAMPLE_001,huter,Huter,false,power_tools,Example Huter Model,HUTER-001|H-001,4600000000001,Huter yellow box|Хутер желтая коробка,reference/huter_example_001_front.jpg|reference/huter_example_001_side.jpg
+OWN_BRAND_EXAMPLE_001,own_brand_a,Ваш бренд A,true,power_tools,Example Own Brand Model,OWN-001,4600000000002,Наш бренд A|Private label A,reference/own_brand_example_001_front.jpg

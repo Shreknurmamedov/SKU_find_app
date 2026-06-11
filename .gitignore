@@ -1,0 +1,27 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.env
+.env.*
+
+# Raw market media stays local or goes to object storage/Git LFS.
+*.HEIC
+*.heic
+*.MOV
+*.mov
+*.MP4
+*.mp4
+sku_exact_areas/
+sku_uncertain_areas/
+
+reports/*.json
+reports/*.md
+!reports/.gitkeep

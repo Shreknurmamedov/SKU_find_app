@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SKU Catalog",
+  "type": "object",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "sku_id",
+          "brand_id",
+          "brand_name",
+          "is_own_brand",
+          "category",
+          "model_name"
+        ],
+        "properties": {
+          "sku_id": {"type": "string"},
+          "brand_id": {"type": "string"},
+          "brand_name": {"type": "string"},
+          "is_own_brand": {"type": "boolean"},
+          "category": {"type": "string"},
+          "model_name": {"type": "string"},
+          "article_codes": {"type": "array", "items": {"type": "string"}},
+          "barcodes": {"type": "array", "items": {"type": "string"}},
+          "aliases": {"type": "array", "items": {"type": "string"}},
+          "packaging_versions": {"type": "array", "items": {"type": "string"}},
+          "reference_images": {"type": "array", "items": {"type": "string"}},
+          "logo_images": {"type": "array", "items": {"type": "string"}},
+          "expected_colors": {"type": "array", "items": {"type": "string"}},
+          "dimensions": {
+            "type": "object",
+            "properties": {
+              "width_mm": {"type": "number"},
+              "height_mm": {"type": "number"},
+              "depth_mm": {"type": "number"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

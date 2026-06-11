@@ -1,0 +1,20 @@
+{
+  "source_id": "sku_exact_zone_1",
+  "source_path": "sku_exact_areas/sku_exact_zone_1.jpg",
+  "annotations": [
+    {
+      "object_instance_id": "obj_000001",
+      "same_physical_item_id": "item_000001",
+      "bbox": [35, 42, 210, 166],
+      "mask_path": null,
+      "brand_id": "huter",
+      "sku_id": null,
+      "is_own_brand": false,
+      "visible_area_ratio": 0.85,
+      "occlusion_level": "low",
+      "recognition_status": "brand_only",
+      "evidence_quality": "good",
+      "notes": ["Example only. Replace with real reviewed annotation."]
+    }
+  ]
+}

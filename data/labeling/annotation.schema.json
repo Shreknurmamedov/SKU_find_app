@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SKU Audit Annotation",
+  "type": "object",
+  "required": ["source_id", "annotations"],
+  "properties": {
+    "source_id": {"type": "string"},
+    "source_path": {"type": "string"},
+    "annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "object_instance_id",
+          "same_physical_item_id",
+          "bbox",
+          "brand_id",
+          "sku_id",
+          "recognition_status"
+        ],
+        "properties": {
+          "object_instance_id": {"type": "string"},
+          "same_physical_item_id": {"type": "string"},
+          "bbox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "number"}
+          },
+          "mask_path": {"type": ["string", "null"]},
+          "brand_id": {"type": ["string", "null"]},
+          "sku_id": {"type": ["string", "null"]},
+          "is_own_brand": {"type": ["boolean", "null"]},
+          "visible_area_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+          "occlusion_level": {
+            "type": "string",
+            "enum": ["none", "low", "medium", "high", "unknown"]
+          },
+          "recognition_status": {
+            "type": "string",
+            "enum": ["recognized", "brand_only", "unknown", "needs_retake", "not_product"]
+          },
+          "evidence_quality": {
+            "type": "string",
+            "enum": ["good", "blurred", "too_far", "occluded", "overexposed", "dark", "unknown"]
+          },
+          "notes": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}
