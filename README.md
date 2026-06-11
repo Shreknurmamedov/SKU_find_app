@@ -18,6 +18,26 @@ MVP-проект для пересчета SKU по видео и изображ
 
 ## Быстрый запуск
 
+Запуск backend API:
+
+```bash
+./scripts/run_backend.sh
+```
+
+После запуска:
+
+- health: `http://127.0.0.1:8088/health`
+- каталог: `http://127.0.0.1:8088/catalog/summary`
+- список jobs: `http://127.0.0.1:8088/jobs`
+
+Создать job по локальным фото/видео:
+
+```bash
+./scripts/create_local_job.sh
+```
+
+Старый baseline-аудит папок:
+
 ```bash
 cd backend
 PYTHONPATH=src python3 -m sku_audit.cli audit-images \
@@ -53,20 +73,35 @@ docs/                    Product and engineering documentation
 reports/                 Generated local reports
 sku_exact_areas/         Current exact-count image examples
 sku_uncertain_areas/     Current uncertain-zone image examples
+var/                     Runtime uploads, previews, jobs (ignored by git)
 ```
 
 ## Следующий технический слой
 
-1. Конвертировать/нормализовать HEIC-фото торговых точек в рабочий формат для ML.
-2. Подключить реальный детектор/сегментатор товара.
-3. Добавить OCR и распознавание логотипов.
-4. Связать распознавание с `data/catalog/own_products.csv`.
-5. Реализовать visual retrieval по embeddings.
-6. Добавить tracking и дедупликацию физических объектов.
-7. Собрать Android-приложение на CameraX для записи, контроля качества и загрузки материалов.
+1. Подключить реальный детектор/сегментатор товара.
+2. Добавить OCR и распознавание логотипов.
+3. Связать распознавание с `data/catalog/own_products.csv`.
+4. Реализовать visual retrieval по embeddings.
+5. Добавить tracking и дедупликацию физических объектов.
+6. Расширить Android-приложение с file picker до CameraX live-съемки и live-подсказок.
 
 ## Текущие данные
 
 - Фото торговых точек: 115 HEIC-файлов в 7 папках.
+- Видео торговых точек: 7 MOV-файлов.
 - Каталог наших товаров: 2470 SKU из `utake_products_catalog.docx`.
 - Каталог конкурентов: пока отсутствует; в MVP такие товары будут помечаться как `competitor_or_unknown`.
+
+## Android MVP
+
+Android-проект находится в `mobile/android`.
+
+Текущий MVP на планшете:
+
+1. Введите URL backend, например `http://192.168.1.23:8088`.
+2. Введите название ТТ.
+3. Выберите фото/видео.
+4. Нажмите отправку.
+5. Получите `job_id` и summary качества.
+
+Подробности: `mobile/README.md`.

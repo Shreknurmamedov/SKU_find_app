@@ -17,14 +17,30 @@
 
 ## Текущий прототип
 
-Сейчас реализован baseline ingestion/reporting:
+Сейчас реализован MVP ingestion/reporting:
 
 - читает изображения из папок;
+- принимает upload файлов через `POST /jobs/upload`;
+- создает processing jobs в `var/jobs`;
+- конвертирует HEIC preview через системный `sips`;
+- читает видео-метаданные через `ffprobe`;
+- оценивает яркость, контраст и резкость кадров;
 - классифицирует текущие зоны как `recognized_zone` или `needs_review_zone` по имени папки;
 - формирует JSON и Markdown отчет;
 - сохраняет ссылки на evidence-файлы.
 
 Этот слой нужен, чтобы API и формат отчета были готовы до подключения ML.
+
+## HTTP endpoints
+
+- `GET /health`
+- `GET /catalog/summary`
+- `POST /audit/images`
+- `POST /jobs/from-local`
+- `POST /jobs/upload`
+- `GET /jobs`
+- `GET /jobs/{job_id}`
+- `GET /jobs/{job_id}/report.md`
 
 ## Будущие интерфейсы моделей
 

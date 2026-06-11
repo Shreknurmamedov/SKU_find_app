@@ -21,6 +21,19 @@ class ZoneType(StrEnum):
     UNKNOWN = "unknown"
 
 
+class MediaKind(StrEnum):
+    IMAGE = "image"
+    VIDEO = "video"
+    OTHER = "other"
+
+
+class QualityStatus(StrEnum):
+    OK = "ok"
+    WARNING = "warning"
+    RETAKE = "retake"
+    PENDING = "pending"
+
+
 @dataclass(frozen=True)
 class SkuCatalogEntry:
     sku_id: str
