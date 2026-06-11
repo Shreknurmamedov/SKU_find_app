@@ -37,4 +37,12 @@ http://<IP-MAC>:8088
 
 Откройте папку `mobile/android` в Android Studio и нажмите Run.
 
+Или соберите APK через GitHub Actions:
+
+1. Откройте репозиторий на GitHub.
+2. Перейдите во вкладку `Actions`.
+3. Выберите workflow `Android APK`.
+4. Откройте последний успешный run.
+5. Скачайте artifact `sku-find-debug-apk`.
+
 Текущая машина не показывает Android SDK/Gradle в терминале, поэтому локальная CLI-сборка APK здесь не проверялась.

@@ -119,6 +119,8 @@ public class MainActivity extends Activity {
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, PICK_MEDIA_REQUEST);
     }
 
