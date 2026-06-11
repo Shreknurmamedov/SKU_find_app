@@ -1,4 +1,6 @@
 ultralytics>=8.3.0
+easyocr>=1.7.2
+git+https://github.com/ultralytics/CLIP.git
 opencv-python>=4.10.0
 pyyaml>=6.0.0
 pillow>=10.0.0
