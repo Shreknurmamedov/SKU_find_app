@@ -78,12 +78,13 @@ var/                     Runtime uploads, previews, jobs (ignored by git)
 
 ## Следующий технический слой
 
-1. Подключить реальный детектор/сегментатор товара.
-2. Добавить OCR и распознавание логотипов.
-3. Связать распознавание с `data/catalog/own_products.csv`.
-4. Реализовать visual retrieval по embeddings.
-5. Добавить tracking и дедупликацию физических объектов.
-6. Расширить Android-приложение с file picker до CameraX live-съемки и live-подсказок.
+1. Разметить фото в `ml/datasets/sku_live`.
+2. Обучить segmentation baseline: `own_product` / `competitor_or_unknown`.
+3. Экспортировать модель в TFLite и подключить вместо `DemoProductAnalyzer`.
+4. Добавить OCR и распознавание логотипов.
+5. Связать распознавание с `data/catalog/own_products.csv`.
+6. Реализовать visual retrieval по embeddings.
+7. Добавить tracking и дедупликацию физических объектов.
 
 ## Текущие данные
 
@@ -105,3 +106,22 @@ Android-проект находится в `mobile/android`.
 5. Получите `job_id` и summary качества.
 
 Подробности: `mobile/README.md`.
+
+## ML Pipeline
+
+Подготовить фото для разметки:
+
+```bash
+python3 ml/prepare_dataset.py \
+  --source . \
+  --out ml/datasets/sku_live \
+  --label-studio-base-url http://localhost:8099
+```
+
+Запустить static server для Label Studio:
+
+```bash
+python3 -m http.server 8099 -d ml/datasets/sku_live
+```
+
+Разметка и обучение описаны в [docs/ml-training.md](docs/ml-training.md) и [ml/README.md](ml/README.md).

@@ -12,6 +12,9 @@ build/
 .env
 .env.*
 var/
+ml/datasets/
+ml/runs/
+ml/weights/
 
 # Raw market media stays local or goes to object storage/Git LFS.
 *.HEIC
