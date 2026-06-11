@@ -89,7 +89,9 @@ var/                     Runtime uploads, previews, jobs (ignored by git)
 ## Текущие данные
 
 - Фото торговых точек: 115 HEIC-файлов в 7 папках.
+- Фото из ОБИ: 156 HEIC-файлов.
 - Видео торговых точек: 7 MOV-файлов.
+- Локальный ML dataset после подготовки: 293 изображения / 293 Label Studio tasks.
 - Каталог наших товаров: 2470 SKU из `utake_products_catalog.docx`.
 - Каталог конкурентов: пока отсутствует; в MVP такие товары будут помечаться как `competitor_or_unknown`.
 

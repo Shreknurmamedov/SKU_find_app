@@ -25,6 +25,7 @@ ml/weights/
 *.mp4
 sku_exact_areas/
 sku_uncertain_areas/
+Фото из ОБИ/
 
 reports/*.json
 reports/*.md
