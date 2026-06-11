@@ -1,22 +1,35 @@
 package com.utake.skufind;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
+import androidx.activity.ComponentActivity;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.view.PreviewView;
+
+import com.google.common.util.concurrent.ListenableFuture;
 
 import org.json.JSONObject;
 
@@ -30,9 +43,13 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-public class MainActivity extends Activity {
+public class MainActivity extends ComponentActivity {
     private static final int PICK_MEDIA_REQUEST = 1001;
+    private static final int CAMERA_PERMISSION_REQUEST = 1002;
     private static final String PREFS = "sku_find_prefs";
     private static final String DEFAULT_SERVER_URL = "http://10.0.2.2:8088";
 
@@ -40,77 +57,210 @@ public class MainActivity extends Activity {
     private EditText storeNameInput;
     private TextView selectedFilesText;
     private TextView resultText;
+    private TextView liveStatusText;
     private Button uploadButton;
+    private PreviewView previewView;
+    private ProductOverlayView overlayView;
 
     private final List<Uri> selectedUris = new ArrayList<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Executor mainExecutor = command -> mainHandler.post(command);
+    private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
+    private ExecutorService cameraExecutor;
+    private ProcessCameraProvider cameraProvider;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        cameraExecutor = Executors.newSingleThreadExecutor();
         setContentView(buildUi());
+        ensureCamera();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (cameraProvider != null) {
+            cameraProvider.unbindAll();
+        }
+        if (cameraExecutor != null) {
+            cameraExecutor.shutdown();
+        }
+        super.onDestroy();
     }
 
     private View buildUi() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
-        ScrollView scrollView = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(18), dp(20), dp(24));
-        scrollView.addView(root);
+        root.setBackgroundColor(0xFFFFFFFF);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setPadding(dp(18), dp(14), dp(18), dp(10));
+        root.addView(header);
 
         TextView title = new TextView(this);
-        title.setText("SKU Find");
-        title.setTextSize(26);
+        title.setText("SKU Find Live");
+        title.setTextSize(24);
         title.setGravity(Gravity.START);
         title.setTextColor(0xFF111111);
-        root.addView(title);
+        header.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("MVP upload client");
-        subtitle.setTextSize(14);
-        subtitle.setTextColor(0xFF666666);
-        subtitle.setPadding(0, 0, 0, dp(18));
-        root.addView(subtitle);
+        liveStatusText = new TextView(this);
+        liveStatusText.setText("Live camera: запуск...");
+        liveStatusText.setTextSize(14);
+        liveStatusText.setTextColor(0xFF555555);
+        header.addView(liveStatusText);
+
+        FrameLayout cameraFrame = new FrameLayout(this);
+        cameraFrame.setBackgroundColor(0xFF111111);
+        root.addView(cameraFrame, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+        ));
+
+        previewView = new PreviewView(this);
+        previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
+        cameraFrame.addView(previewView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        overlayView = new ProductOverlayView(this);
+        cameraFrame.addView(overlayView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        ScrollView controlsScroll = new ScrollView(this);
+        root.addView(controlsScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setPadding(dp(18), dp(12), dp(18), dp(18));
+        controlsScroll.addView(controls);
+
+        LinearLayout cameraButtons = new LinearLayout(this);
+        cameraButtons.setOrientation(LinearLayout.HORIZONTAL);
+        controls.addView(cameraButtons, matchWrap());
+
+        Button startButton = new Button(this);
+        startButton.setText("Live");
+        startButton.setOnClickListener(view -> ensureCamera());
+        cameraButtons.addView(startButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button stopButton = new Button(this);
+        stopButton.setText("Stop");
+        stopButton.setOnClickListener(view -> stopCamera());
+        cameraButtons.addView(stopButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         serverUrlInput = new EditText(this);
         serverUrlInput.setSingleLine(true);
         serverUrlInput.setHint("Backend URL");
         serverUrlInput.setText(prefs.getString("server_url", DEFAULT_SERVER_URL));
-        root.addView(serverUrlInput, matchWrap());
+        controls.addView(serverUrlInput, matchWrap());
 
         storeNameInput = new EditText(this);
         storeNameInput.setSingleLine(true);
         storeNameInput.setHint("Название ТТ");
         storeNameInput.setText(prefs.getString("store_name", ""));
-        root.addView(storeNameInput, matchWrap());
+        controls.addView(storeNameInput, matchWrap());
 
         Button pickButton = new Button(this);
         pickButton.setText("Выбрать фото/видео");
         pickButton.setOnClickListener(view -> openPicker());
-        root.addView(pickButton, matchWrap());
+        controls.addView(pickButton, matchWrap());
 
         uploadButton = new Button(this);
         uploadButton.setText("Отправить на backend");
         uploadButton.setEnabled(false);
         uploadButton.setOnClickListener(view -> uploadSelectedFiles());
-        root.addView(uploadButton, matchWrap());
+        controls.addView(uploadButton, matchWrap());
 
         selectedFilesText = new TextView(this);
         selectedFilesText.setText("Файлы не выбраны");
         selectedFilesText.setTextSize(14);
         selectedFilesText.setTextColor(0xFF333333);
-        selectedFilesText.setPadding(0, dp(12), 0, dp(12));
-        root.addView(selectedFilesText);
+        selectedFilesText.setPadding(0, dp(10), 0, dp(8));
+        controls.addView(selectedFilesText);
 
         resultText = new TextView(this);
-        resultText.setText("Результат появится после загрузки.");
+        resultText.setText("Live overlay: зеленый = распознано, красный = не распознано. Сейчас подключен demo analyzer.");
         resultText.setTextSize(14);
         resultText.setTextColor(0xFF111111);
-        resultText.setPadding(0, dp(12), 0, 0);
-        root.addView(resultText);
+        resultText.setPadding(0, dp(8), 0, 0);
+        controls.addView(resultText);
 
-        return scrollView;
+        return root;
+    }
+
+    private void ensureCamera() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startCamera();
+        } else {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_REQUEST
+                && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            startCamera();
+        } else {
+            liveStatusText.setText("Camera permission is required for live recognition.");
+        }
+    }
+
+    private void startCamera() {
+        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
+        cameraProviderFuture.addListener(() -> {
+            try {
+                cameraProvider = cameraProviderFuture.get();
+                bindCameraUseCases();
+            } catch (Exception exception) {
+                liveStatusText.setText("Camera error: " + exception.getMessage());
+            }
+        }, mainExecutor);
+    }
+
+    private void bindCameraUseCases() {
+        if (cameraProvider == null) {
+            return;
+        }
+
+        Preview preview = new Preview.Builder().build();
+        preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
+        ImageAnalysis analysis = new ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build();
+        analysis.setAnalyzer(cameraExecutor, image -> {
+            List<ProductDetection> detections = productAnalyzer.analyze(image);
+            runOnUiThread(() -> {
+                overlayView.setDetections(detections);
+                liveStatusText.setText("Live: " + detections.size() + " objects, demo analyzer");
+            });
+            image.close();
+        });
+
+        cameraProvider.unbindAll();
+        cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis);
+    }
+
+    private void stopCamera() {
+        if (cameraProvider != null) {
+            cameraProvider.unbindAll();
+        }
+        overlayView.setDetections(new ArrayList<>());
+        liveStatusText.setText("Live camera stopped.");
     }
 
     private void openPicker() {
@@ -127,27 +277,22 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != PICK_MEDIA_REQUEST || resultCode != RESULT_OK || data == null) {
+        if (requestCode != PICK_MEDIA_REQUEST || resultCode != Activity.RESULT_OK || data == null) {
             return;
         }
 
         selectedUris.clear();
+        int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
         ClipData clipData = data.getClipData();
         if (clipData != null) {
             for (int index = 0; index < clipData.getItemCount(); index++) {
                 Uri uri = clipData.getItemAt(index).getUri();
-                getContentResolver().takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                );
+                getContentResolver().takePersistableUriPermission(uri, flags);
                 selectedUris.add(uri);
             }
         } else if (data.getData() != null) {
             Uri uri = data.getData();
-            getContentResolver().takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-            );
+            getContentResolver().takePersistableUriPermission(uri, flags);
             selectedUris.add(uri);
         }
 
@@ -276,7 +421,7 @@ public class MainActivity extends Activity {
         builder.append("Предупреждения: ").append(summary.getInt("quality_warning")).append("\n");
         builder.append("Переснять: ").append(summary.getInt("quality_retake")).append("\n");
         builder.append("\n");
-        builder.append("SKU-распознавание будет следующим ML-слоем. Сейчас backend принял файлы и проверил качество.");
+        builder.append("Backend принял файлы и проверил качество. Live overlay работает отдельно на CameraX.");
         return builder.toString();
     }
 

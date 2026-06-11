@@ -19,6 +19,25 @@
 - загрузка HEIC/JPEG/video на backend;
 - отчет с зонами пересъемки.
 
+## Live overlay MVP
+
+Текущий Android MVP использует CameraX preview + ImageAnalysis + overlay:
+
+```text
+CameraX Preview
+  + ImageAnalysis frames
+  -> ProductAnalyzer
+  -> ProductDetection[]
+  -> ProductOverlayView
+```
+
+Цвета:
+
+- зеленый: `recognized`;
+- красный: `unknown`.
+
+Пока подключен `DemoProductAnalyzer`, который проверяет live overlay без настоящей ML-модели. Реальная модель должна возвращать те же `ProductDetection` с нормализованными координатами сегмента/объекта, label и confidence.
+
 ## Почему не весь ML на планшете сразу
 
 Galaxy Tab A9 подходит для съемки, подсказок оператору и легких проверок качества. Для надежного SKU-распознавания, OCR, embeddings и дедупликации лучше начинать с backend. После стабилизации моделей часть логики можно перенести на устройство.
