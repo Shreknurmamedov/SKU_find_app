@@ -67,9 +67,21 @@ def extract_yolo_lines(task: dict) -> list[str]:
             y = value["y"] / 100.0
             width = value["width"] / 100.0
             height = value["height"] / 100.0
-            x_center = x + width / 2.0
-            y_center = y + height / 2.0
-            lines.append(format_yolo_line(cls, [x_center, y_center, width, height]))
+            lines.append(
+                format_yolo_line(
+                    cls,
+                    [
+                        x,
+                        y,
+                        x + width,
+                        y,
+                        x + width,
+                        y + height,
+                        x,
+                        y + height,
+                    ],
+                )
+            )
     return lines
 
 
