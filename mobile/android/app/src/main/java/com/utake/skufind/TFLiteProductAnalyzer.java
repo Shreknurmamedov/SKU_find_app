@@ -23,10 +23,15 @@ public class TFLiteProductAnalyzer {
 
     private static final String MODEL = "models/product_det_v2_float32.tflite";
     private static final int INPUT = 320;
-    private static final float CONF_THRESHOLD = 0.35f;
+    private static final float CONF_THRESHOLD = 0.50f;
     private static final float IOU_THRESHOLD = 0.5f;
     private static final float SHARP_GOOD = 0.5f;   // box sharpness >= this => well captured
     private static final int MAX_DETECTIONS = 100;
+    // The single-class detector was trained on dense shelves and tends to box big
+    // background objects (a cabinet, a wall) as "product". Drop boxes that are too
+    // large (furniture) or too tiny (noise) to behave more like a per-SKU detector.
+    private static final float MAX_AREA_FRAC = 0.35f;
+    private static final float MIN_AREA_FRAC = 0.004f;
 
     private Interpreter interpreter;
     private int outD1, outD2;     // output shape [1, outD1, outD2]
@@ -125,8 +130,13 @@ public class TFLiteProductAnalyzer {
             float y2 = (pcy + ph / 2 - padY) / scale;
             float nx1 = clamp01(x1 / w), ny1 = clamp01(y1 / h);
             float nx2 = clamp01(x2 / w), ny2 = clamp01(y2 / h);
-            if (nx2 - nx1 < 0.01f || ny2 - ny1 < 0.01f) {
+            float bwN = nx2 - nx1, bhN = ny2 - ny1;
+            if (bwN < 0.01f || bhN < 0.01f) {
                 continue;
+            }
+            float areaFrac = bwN * bhN;
+            if (areaFrac > MAX_AREA_FRAC || areaFrac < MIN_AREA_FRAC) {
+                continue; // furniture/wall (too big) or noise (too small)
             }
             boxes.add(new float[]{nx1, ny1, nx2, ny2, conf});
         }
