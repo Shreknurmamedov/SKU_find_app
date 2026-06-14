@@ -74,6 +74,7 @@ public class MainActivity extends ComponentActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Executor mainExecutor = command -> mainHandler.post(command);
     private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
+    private TFLiteProductAnalyzer tfliteAnalyzer;
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
 
@@ -111,6 +112,7 @@ public class MainActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         cameraExecutor = Executors.newSingleThreadExecutor();
+        tfliteAnalyzer = new TFLiteProductAnalyzer(this);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
             rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
@@ -270,7 +272,8 @@ public class MainActivity extends ComponentActivity {
         controls.addView(selectedFilesText);
 
         resultText = new TextView(this);
-        resultText.setText("Live overlay: зеленый = распознано, красный = не распознано. Сейчас подключен demo analyzer.");
+        resultText.setText("Live: зелёный = товар снят хорошо, красный = размыто, переснять. "
+                + "Подсчёт SKU по брендам — после отправки видео на backend.");
         resultText.setTextSize(14);
         resultText.setTextColor(0xFF111111);
         resultText.setPadding(0, dp(8), 0, 0);
@@ -321,16 +324,16 @@ public class MainActivity extends ComponentActivity {
 
         ImageAnalysis analysis = new ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build();
         analysis.setAnalyzer(cameraExecutor, image -> {
-            if (scanMode) {
-                processScanFrame(image);
-            } else {
-                List<ProductDetection> detections = productAnalyzer.analyze(image);
-                runOnUiThread(() -> {
-                    overlayView.setDetections(detections);
-                    liveStatusText.setText("Live: " + detections.size() + " objects, demo analyzer");
-                });
+            RgbFrame frame = RgbFrame.from(image);
+            if (frame != null) {
+                if (scanMode) {
+                    processScanFrame(frame, image.getImageInfo().getRotationDegrees());
+                } else {
+                    runDetection(frame);
+                }
             }
             image.close();
         });
@@ -373,12 +376,33 @@ public class MainActivity extends ComponentActivity {
                 false, 0f, 0f, "", null, 0, 0, false);
     }
 
-    private void processScanFrame(androidx.camera.core.ImageProxy image) {
-        LumaFrame luma = LumaFrame.from(image, 80);
+    private void runDetection(RgbFrame frame) {
+        final List<ProductDetection> detections;
+        final String statusText;
+        if (tfliteAnalyzer != null && tfliteAnalyzer.isReady()) {
+            detections = tfliteAnalyzer.analyze(frame);
+            int reshoot = 0;
+            for (ProductDetection d : detections) {
+                if (!d.recognized) {
+                    reshoot++;
+                }
+            }
+            statusText = "Товаров: " + detections.size() + ", переснять (размыто): " + reshoot;
+        } else {
+            detections = productAnalyzer.analyze(null);
+            statusText = "Демо-режим (модель не загрузилась)";
+        }
+        runOnUiThread(() -> {
+            overlayView.setDetections(detections);
+            liveStatusText.setText(statusText);
+        });
+    }
+
+    private void processScanFrame(RgbFrame frame, int rotation) {
+        LumaFrame luma = LumaFrame.fromArgb(frame, 80);
         if (luma == null) {
             return;
         }
-        int rotation = image.getImageInfo().getRotationDegrees();
 
         float dYaw = 0f;
         float dPitch = 0f;

@@ -19,6 +19,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Export TFLite model into app assets
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2" ultralytics
+          python ml/export_tflite.py
+          ls -la mobile/android/app/src/main/assets/models/
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 

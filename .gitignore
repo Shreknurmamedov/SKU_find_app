@@ -22,6 +22,8 @@ weights/
 *.onnx
 *.tflite
 mobileclip_blt.ts
+# but DO ship the on-device model bundled in the Android APK
+!mobile/android/app/src/main/assets/models/*.tflite
 
 # Raw market media stays local or goes to object storage/Git LFS.
 *.HEIC

@@ -18,6 +18,11 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // Do not compress the TFLite model so it can be memory-mapped from assets.
+    aaptOptions {
+        noCompress "tflite"
+    }
 }
 
 dependencies {
@@ -26,4 +31,5 @@ dependencies {
     implementation "androidx.camera:camera-camera2:${cameraxVersion}"
     implementation "androidx.camera:camera-lifecycle:${cameraxVersion}"
     implementation "androidx.camera:camera-view:${cameraxVersion}"
+    implementation "org.tensorflow:tensorflow-lite:2.16.1"
 }
