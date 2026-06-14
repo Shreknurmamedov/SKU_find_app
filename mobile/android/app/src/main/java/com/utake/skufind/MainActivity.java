@@ -500,10 +500,14 @@ public class MainActivity extends ComponentActivity {
             try {
                 String response = uploadMultipart(serverUrl + "/jobs/upload", storeName, selectedUris);
                 String formatted = formatJobResponse(response);
+                String jobId = new JSONObject(response).optString("job_id", "");
                 runOnUiThread(() -> {
                     resultText.setText(formatted);
                     uploadButton.setEnabled(true);
                 });
+                if (!jobId.isEmpty()) {
+                    pollSkuResult(serverUrl, jobId, formatted);
+                }
             } catch (Exception exception) {
                 runOnUiThread(() -> {
                     resultText.setText("Ошибка: " + exception.getMessage());
@@ -511,6 +515,91 @@ public class MainActivity extends ComponentActivity {
                 });
             }
         }).start();
+    }
+
+    /** Poll the job until SKU counting finishes, updating the result text. */
+    private void pollSkuResult(String serverUrl, String jobId, String header) {
+        new Thread(() -> {
+            for (int attempt = 0; attempt < 240; attempt++) {
+                try {
+                    String body = httpGet(serverUrl + "/jobs/" + jobId);
+                    JSONObject job = new JSONObject(body);
+                    String status = job.optString("sku_status", "pending");
+                    String note = job.optString("sku_note", "");
+                    if ("done".equals(status)) {
+                        JSONObject report = job.optJSONObject("sku_report");
+                        String text = header + "\n\n=== Подсчёт SKU ===\n" + formatSkuReport(report);
+                        runOnUiThread(() -> resultText.setText(text));
+                        return;
+                    }
+                    if ("failed".equals(status) || "skipped".equals(status)) {
+                        String text = header + "\n\nПодсчёт SKU: " + status
+                                + (note.isEmpty() ? "" : "\n" + note);
+                        runOnUiThread(() -> resultText.setText(text));
+                        return;
+                    }
+                    String progress = "processing".equals(status)
+                            ? "Идёт подсчёт SKU на сервере..." : "Подсчёт SKU в очереди...";
+                    String shown = header + "\n\n" + progress
+                            + (note.isEmpty() ? "" : "\n" + note);
+                    runOnUiThread(() -> resultText.setText(shown));
+                } catch (Exception ignored) {
+                    // transient network error: keep polling
+                }
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+            }
+            runOnUiThread(() -> resultText.setText(header
+                    + "\n\nПодсчёт SKU занимает дольше обычного. Проверьте отчёт на сервере позже."));
+        }).start();
+    }
+
+    private String formatSkuReport(JSONObject report) {
+        if (report == null) {
+            return "Отчёт пуст.";
+        }
+        StringBuilder b = new StringBuilder();
+        JSONObject totals = report.optJSONObject("totals");
+        if (totals != null) {
+            b.append("Объектов: ").append(totals.optInt("physical_objects")).append("\n");
+            b.append("Наши бренды: ").append(totals.optInt("own_brand_objects")).append("\n");
+            b.append("Уверенно SKU: ").append(totals.optInt("confident_sku")).append("\n");
+            b.append("На проверку: ").append(totals.optInt("needs_review")).append("\n");
+        }
+        appendCounts(b, "\nПо брендам:", report.optJSONObject("by_brand"));
+        appendCounts(b, "\nПо моделям:", report.optJSONObject("by_model"));
+        return b.toString();
+    }
+
+    private void appendCounts(StringBuilder b, String title, JSONObject obj) {
+        if (obj == null || obj.length() == 0) {
+            return;
+        }
+        b.append(title).append("\n");
+        java.util.Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) {
+            String k = keys.next();
+            b.append("  ").append(k).append(": ").append(obj.optInt(k)).append("\n");
+        }
+    }
+
+    private String httpGet(String urlString) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(20000);
+        int status = connection.getResponseCode();
+        InputStream input = status >= 200 && status < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+        String body = readAll(input);
+        if (status < 200 || status >= 300) {
+            throw new IllegalStateException("HTTP " + status + ": " + body);
+        }
+        return body;
     }
 
     private String uploadMultipart(String targetUrl, String storeName, List<Uri> uris) throws Exception {

@@ -40,13 +40,28 @@ on-device, backend для этого режима не нужен.
 устройстве. Знаки осей в `MotionTracker.rotateToDisplay` могут потребовать разворота
 под конкретную ориентацию планшета — это однострочная правка после первого теста.
 
+## Реальный подсчёт SKU (приложение → backend → отчёт)
+
+Загрузка видео из приложения (`Отправить на backend`) теперь **реально считает SKU**:
+backend сохраняет видео, в фоне запускает ML-пайплайн (`python -m ml.audit_video`)
+по каждому видео и прикрепляет к job отчёт. Приложение **опрашивает** `GET /jobs/{id}`
+и показывает результат, когда `sku_status` станет `done`: число объектов, наши бренды,
+группы, модели и сколько ушло «на проверку».
+
+Требования к серверу/компьютеру, где крутится backend:
+- то же Python-окружение с зависимостями ML (`ultralytics`, `torch`, `easyocr`), что и для `ml/`;
+- наличие весов `weights/product_det_v2.pt` в корне репозитория;
+- по умолчанию используется устройство `mps` (Mac). На другом железе задайте
+  `SKU_AUDIT_DEVICE=cpu` (медленнее) или `cuda`. Веса — через `SKU_AUDIT_WEIGHTS`.
+- подсчёт идёт минуты на видео; пока он идёт, job имеет `sku_status=processing`.
+
 ## Запуск backend для планшета
 
 На Mac в корне проекта:
 
 ```bash
 cd backend
-PYTHONPATH=src python3 -m uvicorn sku_audit.app:app --host 0.0.0.0 --port 8088
+PYTHONPATH=src SKU_AUDIT_DEVICE=mps python3 -m uvicorn sku_audit.app:app --host 0.0.0.0 --port 8088
 ```
 
 Узнать IP Mac в Wi-Fi:

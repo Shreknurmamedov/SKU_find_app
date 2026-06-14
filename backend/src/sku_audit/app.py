@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
@@ -9,9 +10,21 @@ from pydantic import BaseModel
 from sku_audit.catalog import load_catalog
 from sku_audit.jobs import JobStore
 from sku_audit.pipeline import run_image_folder_audit
+from sku_audit import sku_count
 
 app = FastAPI(title="SKU Audit Backend", version="0.1.0")
 job_store = JobStore(Path(os.environ.get("SKU_AUDIT_VAR_DIR", "var")))
+
+
+def _start_sku_counting(job_id: str) -> None:
+    """Kick off SKU counting for a job in a background daemon thread."""
+    thread = threading.Thread(
+        target=sku_count.process_job,
+        args=(job_store, job_id),
+        name=f"sku-count-{job_id}",
+        daemon=True,
+    )
+    thread.start()
 
 
 class ImageAuditRequest(BaseModel):
@@ -75,6 +88,7 @@ async def upload_job(
     if not payloads:
         raise HTTPException(status_code=400, detail="All uploaded files were empty")
     job = job_store.save_uploaded_bytes(payloads, store_name=store_name)
+    _start_sku_counting(job.job_id)
     return job.to_dict()
 
 

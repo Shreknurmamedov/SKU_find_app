@@ -34,6 +34,10 @@ class ProcessingJob:
     summary: dict[str, Any]
     report_markdown: str
     notes: list[str] = field(default_factory=list)
+    # Real SKU counting runs asynchronously after upload (see sku_count.py).
+    sku_status: str = "pending"  # pending|processing|done|failed|skipped
+    sku_report: dict[str, Any] | None = None
+    sku_note: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +120,31 @@ class JobStore:
             summary=payload["summary"],
             report_markdown=payload["report_markdown"],
             notes=payload.get("notes", []),
+            sku_status=payload.get("sku_status", "pending"),
+            sku_report=payload.get("sku_report"),
+            sku_note=payload.get("sku_note"),
+        )
+
+    def update_sku(
+        self,
+        job_id: str,
+        sku_status: str,
+        sku_report: dict[str, Any] | None,
+        *,
+        note: str | None = None,
+    ) -> None:
+        """Patch the SKU-counting fields of a stored job in place."""
+        path = self.jobs_dir / job_id / "job.json"
+        if not path.exists():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["sku_status"] = sku_status
+        payload["sku_report"] = sku_report
+        if note is not None:
+            payload["sku_note"] = note
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
 
     def list_jobs(self) -> list[dict[str, Any]]:
