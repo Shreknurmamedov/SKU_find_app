@@ -1,0 +1,13 @@
+# BoT-SORT tuned for shaky/panning shelf video to cut track fragmentation.
+tracker_type: botsort
+track_high_thresh: 0.30
+track_low_thresh: 0.10
+new_track_thresh: 0.40      # higher -> fewer spurious new IDs from flicker
+track_buffer: 50            # keep lost tracks alive longer -> rebind instead of new ID
+match_thresh: 0.80
+fuse_score: True
+gmc_method: sparseOptFlow   # compensate camera pan/shake
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: True             # appearance re-id (detector features) to rebind across gaps
+model: auto
