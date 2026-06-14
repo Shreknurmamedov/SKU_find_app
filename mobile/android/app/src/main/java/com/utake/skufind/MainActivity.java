@@ -4,10 +4,15 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -43,6 +48,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -59,8 +65,10 @@ public class MainActivity extends ComponentActivity {
     private TextView resultText;
     private TextView liveStatusText;
     private Button uploadButton;
+    private Button scanButton;
     private PreviewView previewView;
     private ProductOverlayView overlayView;
+    private CoverageOverlayView coverageView;
 
     private final List<Uri> selectedUris = new ArrayList<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -69,12 +77,63 @@ public class MainActivity extends ComponentActivity {
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
 
+    // ---- coverage scan mode ----
+    private final ScanGrid scanGrid = new ScanGrid();
+    private final MotionTracker motionTracker = new MotionTracker();
+    private volatile boolean scanMode = false;
+    // gyro orientation, updated on the sensor thread, sampled on the camera thread
+    private SensorManager sensorManager;
+    private Sensor rotationSensor;
+    private volatile float gyroYaw = 0f;
+    private volatile float gyroPitch = 0f;
+    private volatile boolean gyroReady = false;
+    private float prevYaw = 0f;
+    private float prevPitch = 0f;
+    private boolean havePrevAngles = false;
+    private final float[] rotMatrix = new float[9];
+    private final float[] orientation = new float[3];
+
+    private final SensorEventListener sensorListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            SensorManager.getRotationMatrixFromVector(rotMatrix, event.values);
+            SensorManager.getOrientation(rotMatrix, orientation);
+            gyroYaw = orientation[0];   // azimuth
+            gyroPitch = orientation[1]; // pitch
+            gyroReady = true;
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         cameraExecutor = Executors.newSingleThreadExecutor();
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) {
+            rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        }
         setContentView(buildUi());
         ensureCamera();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (sensorManager != null && rotationSensor != null) {
+            sensorManager.registerListener(sensorListener, rotationSensor,
+                    SensorManager.SENSOR_DELAY_GAME);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(sensorListener);
+        }
+        super.onPause();
     }
 
     @Override
@@ -134,6 +193,13 @@ public class MainActivity extends ComponentActivity {
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
 
+        coverageView = new CoverageOverlayView(this);
+        coverageView.setVisibility(View.GONE);
+        cameraFrame.addView(coverageView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
         ScrollView controlsScroll = new ScrollView(this);
         root.addView(controlsScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -158,6 +224,20 @@ public class MainActivity extends ComponentActivity {
         stopButton.setText("Stop");
         stopButton.setOnClickListener(view -> stopCamera());
         cameraButtons.addView(stopButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout scanButtons = new LinearLayout(this);
+        scanButtons.setOrientation(LinearLayout.HORIZONTAL);
+        controls.addView(scanButtons, matchWrap());
+
+        scanButton = new Button(this);
+        scanButton.setText("Сканировать покрытие");
+        scanButton.setOnClickListener(view -> toggleScanMode());
+        scanButtons.addView(scanButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f));
+
+        Button resetButton = new Button(this);
+        resetButton.setText("Сброс сетки");
+        resetButton.setOnClickListener(view -> resetScan());
+        scanButtons.addView(resetButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         serverUrlInput = new EditText(this);
         serverUrlInput.setSingleLine(true);
@@ -243,11 +323,15 @@ public class MainActivity extends ComponentActivity {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build();
         analysis.setAnalyzer(cameraExecutor, image -> {
-            List<ProductDetection> detections = productAnalyzer.analyze(image);
-            runOnUiThread(() -> {
-                overlayView.setDetections(detections);
-                liveStatusText.setText("Live: " + detections.size() + " objects, demo analyzer");
-            });
+            if (scanMode) {
+                processScanFrame(image);
+            } else {
+                List<ProductDetection> detections = productAnalyzer.analyze(image);
+                runOnUiThread(() -> {
+                    overlayView.setDetections(detections);
+                    liveStatusText.setText("Live: " + detections.size() + " objects, demo analyzer");
+                });
+            }
             image.close();
         });
 
@@ -261,6 +345,106 @@ public class MainActivity extends ComponentActivity {
         }
         overlayView.setDetections(new ArrayList<>());
         liveStatusText.setText("Live camera stopped.");
+    }
+
+    // ---- coverage scan mode ----
+
+    private void toggleScanMode() {
+        scanMode = !scanMode;
+        if (scanMode) {
+            resetScan();
+            overlayView.setVisibility(View.GONE);
+            coverageView.setVisibility(View.VISIBLE);
+            scanButton.setText("Стоп сканирование");
+            liveStatusText.setText("Сканирование: ведите камеру по полкам");
+        } else {
+            coverageView.setVisibility(View.GONE);
+            overlayView.setVisibility(View.VISIBLE);
+            scanButton.setText("Сканировать покрытие");
+            liveStatusText.setText("Сканирование остановлено");
+        }
+    }
+
+    private void resetScan() {
+        scanGrid.reset();
+        motionTracker.reset();
+        havePrevAngles = false;
+        coverageView.setState(new ArrayList<>(), new ArrayList<>(), 0, 0, 0, 0,
+                false, 0f, 0f, "", null, 0, 0, false);
+    }
+
+    private void processScanFrame(androidx.camera.core.ImageProxy image) {
+        LumaFrame luma = LumaFrame.from(image, 80);
+        if (luma == null) {
+            return;
+        }
+        int rotation = image.getImageInfo().getRotationDegrees();
+
+        float dYaw = 0f;
+        float dPitch = 0f;
+        if (gyroReady) {
+            if (havePrevAngles) {
+                dYaw = angleDelta(prevYaw, gyroYaw);
+                dPitch = angleDelta(prevPitch, gyroPitch);
+            }
+            prevYaw = gyroYaw;
+            prevPitch = gyroPitch;
+            havePrevAngles = true;
+        }
+
+        float sharp = FrameQuality.sharpScore(luma);
+        motionTracker.update(luma, rotation, dYaw, dPitch);
+        float cx = motionTracker.cx();
+        float cy = motionTracker.cy();
+        float speed = motionTracker.speed();
+
+        boolean tooFast = speed > 0.18f;
+        // Mark coverage; a cell only turns green once a sharp frame covers it.
+        scanGrid.markView(cx, cy, sharp);
+
+        int good = scanGrid.countGood();
+        int poor = scanGrid.countPoor();
+        float[] arrow = scanGrid.nearestPoorDirection(cx, cy);
+        boolean blurNow = sharp < 0.40f || tooFast;
+
+        String hint;
+        if (tooFast) {
+            hint = "Слишком быстро — медленнее";
+        } else if (poor > 0) {
+            hint = "Есть зоны для пересъёмки";
+        } else {
+            hint = "Ведите камеру по полкам";
+        }
+
+        // Build draw snapshots on this (camera) thread so the UI thread never
+        // iterates the live grid map concurrently.
+        final List<ScanGrid.Cell> viewCells = scanGrid.cellsInView(cx, cy);
+        final List<ScanGrid.Cell> mapCells = scanGrid.allCells();
+        final int minCol = scanGrid.minCol();
+        final int maxCol = scanGrid.maxCol();
+        final int minRow = scanGrid.minRow();
+        final int maxRow = scanGrid.maxRow();
+        final boolean hasBounds = scanGrid.hasBounds();
+        final String hintFinal = hint;
+
+        runOnUiThread(() -> {
+            coverageView.setState(viewCells, mapCells, minCol, maxCol, minRow, maxRow,
+                    hasBounds, cx, cy, hintFinal, arrow, good, poor, blurNow);
+            liveStatusText.setText(String.format(Locale.US,
+                    "Покрытие: OK %d, переснять %d, резкость %.0f%%", good, poor, sharp * 100f));
+        });
+    }
+
+    /** Shortest signed angle from a to b, handling the -PI..PI wrap. */
+    private float angleDelta(float a, float b) {
+        float d = b - a;
+        while (d > Math.PI) {
+            d -= (float) (2 * Math.PI);
+        }
+        while (d < -Math.PI) {
+            d += (float) (2 * Math.PI);
+        }
+        return d;
     }
 
     private void openPicker() {
