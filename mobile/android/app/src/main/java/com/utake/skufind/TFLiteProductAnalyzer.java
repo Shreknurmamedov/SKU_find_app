@@ -23,9 +23,11 @@ public class TFLiteProductAnalyzer {
 
     private static final String MODEL = "models/product_det_v2_float32.tflite";
     private static final int INPUT = 320;
-    private static final float CONF_THRESHOLD = 0.50f;
+    // Display floor: boxes below this confidence are not shown at all.
+    private static final float CONF_THRESHOLD = 0.45f;
+    // Confident SKU (green) vs detected-but-uncertain / poorly recognized (red).
+    private static final float GREEN_CONF = 0.62f;
     private static final float IOU_THRESHOLD = 0.5f;
-    private static final float SHARP_GOOD = 0.5f;   // box sharpness >= this => well captured
     private static final int MAX_DETECTIONS = 100;
     // The single-class detector was trained on dense shelves and tends to box big
     // background objects (a cabinet, a wall) as "product". Drop boxes that are too
@@ -147,15 +149,12 @@ public class TFLiteProductAnalyzer {
             if (count++ >= MAX_DETECTIONS) {
                 break;
             }
-            int px1 = (int) (b[0] * w), py1 = (int) (b[1] * h);
-            int px2 = (int) (b[2] * w), py2 = (int) (b[3] * h);
-            LumaFrame crop = LumaFrame.fromArgbRegion(frame, px1, py1, px2, py2, 48);
-            float sharp = FrameQuality.sharpScore(crop);
-            boolean good = sharp >= SHARP_GOOD;
+            // green = confidently a SKU, red = detected but uncertain / poorly recognized
+            boolean confident = b[4] >= GREEN_CONF;
             result.add(new ProductDetection(
                     new RectF(b[0], b[1], b[2], b[3]),
-                    good,
-                    good ? "OK" : "переснять",
+                    confident,
+                    confident ? "SKU" : "проверить",
                     b[4]));
         }
         return result;

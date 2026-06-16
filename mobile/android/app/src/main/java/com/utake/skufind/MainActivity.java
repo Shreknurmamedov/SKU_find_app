@@ -272,8 +272,8 @@ public class MainActivity extends ComponentActivity {
         controls.addView(selectedFilesText);
 
         resultText = new TextView(this);
-        resultText.setText("Live: зелёный = товар снят хорошо, красный = размыто, переснять. "
-                + "Подсчёт SKU по брендам — после отправки видео на backend.");
+        resultText.setText("Live: зелёный = уверенно SKU, красный = распознан плохо (проверить), "
+                + "слабые детекции скрыты. Подсчёт SKU по брендам — после отправки видео на backend.");
         resultText.setTextSize(14);
         resultText.setTextColor(0xFF111111);
         resultText.setPadding(0, dp(8), 0, 0);
@@ -381,13 +381,13 @@ public class MainActivity extends ComponentActivity {
         final String statusText;
         if (tfliteAnalyzer != null && tfliteAnalyzer.isReady()) {
             detections = tfliteAnalyzer.analyze(frame);
-            int reshoot = 0;
+            int uncertain = 0;
             for (ProductDetection d : detections) {
                 if (!d.recognized) {
-                    reshoot++;
+                    uncertain++;
                 }
             }
-            statusText = "Товаров: " + detections.size() + ", переснять (размыто): " + reshoot;
+            statusText = "SKU: " + detections.size() + ", на проверку (красные): " + uncertain;
         } else {
             detections = productAnalyzer.analyze(null);
             statusText = "Демо-режим (модель не загрузилась)";
