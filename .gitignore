@@ -35,6 +35,9 @@ mobileclip_blt.ts
 sku_exact_areas/
 sku_uncertain_areas/
 Фото из ОБИ/
+Обучение ИИ/
+*.jpg
+*.jpeg
 
 reports/*.json
 reports/*.md
