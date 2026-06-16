@@ -84,7 +84,9 @@ public class MotionTracker {
             confidence = 0f;
         }
 
-        cx += dcx;
+        // Horizontal was reversed on the test device (pan left moved the grid
+        // right), so the coverage window follows the camera correctly.
+        cx -= dcx;
         cy += dcy;
         speed = (float) Math.hypot(dcx, dcy);
 

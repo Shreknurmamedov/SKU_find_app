@@ -32,7 +32,16 @@ import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.video.FileOutputOptions;
+import androidx.camera.video.Quality;
+import androidx.camera.video.QualitySelector;
+import androidx.camera.video.Recorder;
+import androidx.camera.video.Recording;
+import androidx.camera.video.VideoCapture;
+import androidx.camera.video.VideoRecordEvent;
 import androidx.camera.view.PreviewView;
+
+import java.io.File;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -66,6 +75,7 @@ public class MainActivity extends ComponentActivity {
     private TextView liveStatusText;
     private Button uploadButton;
     private Button scanButton;
+    private Button recordButton;
     private PreviewView previewView;
     private ProductOverlayView overlayView;
     private CoverageOverlayView coverageView;
@@ -77,6 +87,12 @@ public class MainActivity extends ComponentActivity {
     private TFLiteProductAnalyzer tfliteAnalyzer;
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
+
+    // video recording (Live button records, then upload to backend)
+    private VideoCapture<Recorder> videoCapture;
+    private Recording activeRecording;
+    private File recordedFile;
+    private volatile boolean isRecording = false;
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
@@ -217,13 +233,13 @@ public class MainActivity extends ComponentActivity {
         cameraButtons.setOrientation(LinearLayout.HORIZONTAL);
         controls.addView(cameraButtons, matchWrap());
 
-        Button startButton = new Button(this);
-        startButton.setText("Live");
-        startButton.setOnClickListener(view -> ensureCamera());
-        cameraButtons.addView(startButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        recordButton = new Button(this);
+        recordButton.setText("● Запись");
+        recordButton.setOnClickListener(view -> toggleRecording());
+        cameraButtons.addView(recordButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         Button stopButton = new Button(this);
-        stopButton.setText("Stop");
+        stopButton.setText("Stop камеру");
         stopButton.setOnClickListener(view -> stopCamera());
         cameraButtons.addView(stopButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -338,16 +354,76 @@ public class MainActivity extends ComponentActivity {
             image.close();
         });
 
+        Recorder recorder = new Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HD))
+                .build();
+        videoCapture = VideoCapture.withOutput(recorder);
+
         cameraProvider.unbindAll();
-        cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis);
+        try {
+            cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview, analysis, videoCapture);
+        } catch (Exception bindAll) {
+            // Some devices can't run preview+analysis+video together; drop analysis.
+            cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview, videoCapture);
+        }
     }
 
     private void stopCamera() {
+        if (isRecording && activeRecording != null) {
+            activeRecording.stop();
+            activeRecording = null;
+            isRecording = false;
+        }
         if (cameraProvider != null) {
             cameraProvider.unbindAll();
         }
         overlayView.setDetections(new ArrayList<>());
-        liveStatusText.setText("Live camera stopped.");
+        liveStatusText.setText("Камера остановлена.");
+    }
+
+    /** Live button: start recording a video, stop to finish, then it's ready to upload. */
+    private void toggleRecording() {
+        if (videoCapture == null) {
+            liveStatusText.setText("Камера ещё не готова, подождите");
+            return;
+        }
+        if (isRecording) {
+            if (activeRecording != null) {
+                activeRecording.stop();
+                activeRecording = null;
+            }
+            return;
+        }
+        File dir = new File(getExternalFilesDir(null), "videos");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        recordedFile = new File(dir, "SKU_" + System.currentTimeMillis() + ".mp4");
+        FileOutputOptions options = new FileOutputOptions.Builder(recordedFile).build();
+        activeRecording = videoCapture.getOutput()
+                .prepareRecording(this, options)
+                .start(mainExecutor, event -> {
+                    if (event instanceof VideoRecordEvent.Start) {
+                        isRecording = true;
+                        recordButton.setText("■ Стоп запись");
+                        liveStatusText.setText("● Идёт запись... ведите камеру по полкам");
+                    } else if (event instanceof VideoRecordEvent.Finalize) {
+                        isRecording = false;
+                        recordButton.setText("● Запись");
+                        VideoRecordEvent.Finalize fin = (VideoRecordEvent.Finalize) event;
+                        if (fin.hasError()) {
+                            liveStatusText.setText("Ошибка записи: " + fin.getError());
+                        } else {
+                            selectedUris.clear();
+                            selectedUris.add(Uri.fromFile(recordedFile));
+                            selectedFilesText.setText("Записано видео: " + recordedFile.getName());
+                            uploadButton.setEnabled(true);
+                            liveStatusText.setText("Видео записано — нажмите «Отправить на backend»");
+                        }
+                    }
+                });
     }
 
     // ---- coverage scan mode ----
