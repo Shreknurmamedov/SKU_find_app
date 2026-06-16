@@ -105,6 +105,21 @@ class Recognizer:
             ((k, e) for e in self.entries for k in e.keys),
             key=lambda kv: -len(kv[0]),
         )
+        # category keyword -> coarse type label, for the "category but no model"
+        # tier. Keep product-type NOUNS (drop adjectives by Russian suffix) and
+        # show the noun itself ("Опрыскиватель", "Триммер") rather than the exact
+        # over-specific catalog sub-category, which one OCR word can't pin down.
+        adj_suffix = ("ЫЙ", "ИЙ", "ОЙ", "ЫЕ", "ИЕ", "АЯ", "ЯЯ", "ОЕ", "ЕЕ",
+                      "ОГО", "ЕГО", "ЫХ", "ИХ", "УЮ", "ЮЮ", "ЫМ", "ИМ", "ОМУ")
+        cat_kw: dict[str, str] = {}
+        for e in self.entries:
+            if not e.category:
+                continue
+            for raw in re.findall(r"[A-ZА-ЯЁ0-9]+", e.category.upper()):
+                if len(raw) >= 5 and not raw.endswith(adj_suffix):
+                    cat_kw.setdefault(canon(raw), raw.capitalize())
+        self.category_index: list[tuple[str, str]] = sorted(
+            cat_kw.items(), key=lambda kv: -len(kv[0]))
         self._reader = None
         self._languages = list(languages)
 
@@ -176,23 +191,44 @@ class Recognizer:
                         matched_key=key, text=text,
                     )
 
-        # 2) brand-only hit -> we know it's our product, model unresolved
+        # Graceful fallback: brand and/or category from the printed words.
+        brand_found = brand_canon = None
         for bcanon, bname in self.brand_by_canon.items():
             if bcanon in tokens:
-                return RecognitionResult(
-                    status="brand_only", is_own=True, brand=bname, model=None,
-                    category=None, sku_id=None, confidence=0.6,
-                    method="brand_text", matched_key=bcanon, text=text,
-                )
+                brand_found, brand_canon = bname, bcanon
+                break
+        cat_found = cat_kw = None
+        for kw, cat in self.category_index:
+            if kw in tokens:
+                cat_found, cat_kw = cat, kw
+                break
 
-        # 3) nothing recognized -> competitor / unknown for stage-2 review
+        # 2) brand known (model unresolved), category attached if also seen
+        if brand_found:
+            return RecognitionResult(
+                status="brand_only", is_own=True, brand=brand_found, model=None,
+                category=cat_found, sku_id=None,
+                confidence=0.62 if cat_found else 0.6,
+                method="brand+category" if cat_found else "brand_text",
+                matched_key=brand_canon, text=text,
+            )
+
+        # 3) only the product type (category) is readable, brand not seen
+        if cat_found:
+            return RecognitionResult(
+                status="category_only", is_own=False, brand=None, model=None,
+                category=cat_found, sku_id=None, confidence=0.45,
+                method="category_text", matched_key=cat_kw, text=text,
+            )
+
+        # 4) nothing readable -> brand not visible, manager must re-shoot
         return RecognitionResult(
             status="unknown", is_own=False, brand=None, model=None,
             category=None, sku_id=None, confidence=0.3 if tokens else 0.15,
             method="no_match", matched_key=None, text=text,
         )
 
-    _STATUS_RANK = {"matched_sku": 3, "brand_only": 2, "unknown": 1}
+    _STATUS_RANK = {"matched_sku": 4, "brand_only": 3, "category_only": 2, "unknown": 1}
 
     def recognize(self, image, rotations=(0, 270, 90, 180), min_side=80) -> RecognitionResult:
         """OCR + match a crop, trying several rotations.

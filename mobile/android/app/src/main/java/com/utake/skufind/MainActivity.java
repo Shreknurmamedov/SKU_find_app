@@ -667,9 +667,12 @@ public class MainActivity extends ComponentActivity {
             b.append("Объектов: ").append(totals.optInt("physical_objects")).append("\n");
             b.append("Наши бренды: ").append(totals.optInt("own_brand_objects")).append("\n");
             b.append("Уверенно SKU: ").append(totals.optInt("confident_sku")).append("\n");
+            b.append("Бренд не виден (переснять): ")
+                    .append(totals.optInt("brand_not_visible")).append("\n");
             b.append("На проверку: ").append(totals.optInt("needs_review")).append("\n");
         }
         appendCounts(b, "\nПо брендам:", report.optJSONObject("by_brand"));
+        appendCounts(b, "\nПо группам:", report.optJSONObject("by_category"));
         appendCounts(b, "\nПо моделям:", report.optJSONObject("by_model"));
         return b.toString();
     }
