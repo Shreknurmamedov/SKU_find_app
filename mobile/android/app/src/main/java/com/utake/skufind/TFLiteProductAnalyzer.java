@@ -29,10 +29,9 @@ public class TFLiteProductAnalyzer {
     private static final float GREEN_CONF = 0.62f;
     private static final float IOU_THRESHOLD = 0.5f;
     private static final int MAX_DETECTIONS = 100;
-    // The single-class detector was trained on dense shelves and tends to box big
-    // background objects (a cabinet, a wall) as "product". Drop boxes that are too
-    // large (furniture) or too tiny (noise) to behave more like a per-SKU detector.
-    private static final float MAX_AREA_FRAC = 0.35f;
+    // Drop only near-full-frame boxes (walls/cabinets) and specks. 0.6 keeps big
+    // close-up product boxes (e.g. a Ресанта carton) that 0.35 was wrongly cutting.
+    private static final float MAX_AREA_FRAC = 0.60f;
     private static final float MIN_AREA_FRAC = 0.004f;
 
     private Interpreter interpreter;
@@ -154,7 +153,7 @@ public class TFLiteProductAnalyzer {
             result.add(new ProductDetection(
                     new RectF(b[0], b[1], b[2], b[3]),
                     confident,
-                    confident ? "SKU" : "проверить",
+                    confident ? "Товар" : "проверить",
                     b[4]));
         }
         return result;

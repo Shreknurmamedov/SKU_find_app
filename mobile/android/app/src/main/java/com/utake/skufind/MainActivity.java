@@ -288,8 +288,8 @@ public class MainActivity extends ComponentActivity {
         controls.addView(selectedFilesText);
 
         resultText = new TextView(this);
-        resultText.setText("Live: зелёный = уверенно SKU, красный = распознан плохо (проверить), "
-                + "слабые детекции скрыты. Подсчёт SKU по брендам — после отправки видео на backend.");
+        resultText.setText("Live: зелёный = уверенно товар, красный = неуверенно (проверить), "
+                + "слабые скрыты. Бренд/модель (Ресанта, Huter...) — после отправки видео на backend.");
         resultText.setTextSize(14);
         resultText.setTextColor(0xFF111111);
         resultText.setPadding(0, dp(8), 0, 0);
@@ -463,7 +463,7 @@ public class MainActivity extends ComponentActivity {
                     uncertain++;
                 }
             }
-            statusText = "SKU: " + detections.size() + ", на проверку (красные): " + uncertain;
+            statusText = "Товаров: " + detections.size() + ", на проверку (красные): " + uncertain;
         } else {
             detections = productAnalyzer.analyze(null);
             statusText = "Демо-режим (модель не загрузилась)";
