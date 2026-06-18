@@ -710,10 +710,10 @@ public class MainActivity extends ComponentActivity {
         HttpURLConnection connection = (HttpURLConnection) new URL(targetUrl).openConnection();
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(120000);
+        connection.setConnectTimeout(30000);
+        connection.setReadTimeout(600000); // large videos over Wi-Fi can take minutes
         connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        connection.setChunkedStreamingMode(0);
+        connection.setChunkedStreamingMode(1 << 20);
 
         try (OutputStream output = new BufferedOutputStream(connection.getOutputStream())) {
             writeFormField(output, boundary, "store_name", storeName);
