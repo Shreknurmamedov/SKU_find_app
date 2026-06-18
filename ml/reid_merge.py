@@ -103,10 +103,19 @@ def merge(track_dir: Path, sim_threshold=0.96, min_gap_frames=12,
     for root, members in sorted(groups.items()):
         members.sort(key=lambda k: -tracks[k]["peak_conf"])
         rep = tracks[members[0]]
+        crop_candidates = []
+        for member in members:
+            track = tracks[member]
+            crop_candidates.extend(
+                track.get("crop_candidates")
+                or [{"crop": track["crop"], "score": track.get("peak_conf", 0.0)}]
+            )
+        crop_candidates.sort(key=lambda c: -float(c.get("score", 0.0)))
         objects.append({
             "object_id": len(objects) + 1,
             "rep_track_id": rep["track_id"],
-            "rep_crop": rep["crop"],
+            "rep_crop": crop_candidates[0]["crop"] if crop_candidates else rep["crop"],
+            "crop_candidates": crop_candidates[:8],
             "track_ids": [tracks[k]["track_id"] for k in members],
             "peak_conf": rep["peak_conf"],
         })

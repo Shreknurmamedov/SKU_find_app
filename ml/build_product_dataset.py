@@ -17,8 +17,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-SRC = Path("ml/datasets/sku_live")
-DST = Path("ml/datasets/sku_products")
 SPLITS = ("train", "val")
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
@@ -33,47 +31,73 @@ def poly_to_box(coords: list[float]) -> tuple[float, float, float, float]:
     return cx, cy, w, h
 
 
-def find_image(stem: str, split: str) -> Path | None:
+def label_to_box(parts: list[str]) -> tuple[float, float, float, float] | None:
+    # Already YOLO detection format: cls cx cy w h.
+    if len(parts) == 5:
+        cx, cy, w, h = [float(v) for v in parts[1:]]
+        if w > 0 and h > 0:
+            return cx, cy, w, h
+        return None
+    # Label Studio rectangle/polygon export converted to YOLO-seg style:
+    # cls x1 y1 x2 y2 ...
+    if len(parts) >= 7:
+        coords = [float(v) for v in parts[1:]]
+        cx, cy, w, h = poly_to_box(coords)
+        if w > 0 and h > 0:
+            return cx, cy, w, h
+    return None
+
+
+def find_image(src: Path, stem: str, split: str) -> Path | None:
     for ext in IMG_EXTS:
-        p = SRC / "images" / split / f"{stem}{ext}"
+        p = src / "images" / split / f"{stem}{ext}"
         if p.exists():
             return p
     return None
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--src", type=Path, default=Path("ml/datasets/sku_live"))
+    ap.add_argument("--dst", type=Path, default=Path("ml/datasets/sku_products"))
+    args = ap.parse_args()
+    src = args.src.expanduser().resolve()
+    dst = args.dst.expanduser().resolve()
+
+    if dst.exists():
+        shutil.rmtree(dst)
     n_imgs = n_boxes = n_skipped = 0
     for split in SPLITS:
-        (DST / "images" / split).mkdir(parents=True, exist_ok=True)
-        (DST / "labels" / split).mkdir(parents=True, exist_ok=True)
-        for lbl in sorted((SRC / "labels" / split).glob("*.txt")):
-            img = find_image(lbl.stem, split)
+        (dst / "images" / split).mkdir(parents=True, exist_ok=True)
+        (dst / "labels" / split).mkdir(parents=True, exist_ok=True)
+        for lbl in sorted((src / "labels" / split).glob("*.txt")):
+            img = find_image(src, lbl.stem, split)
             if img is None:
                 n_skipped += 1
                 continue
             out_lines: list[str] = []
             for line in lbl.read_text().splitlines():
                 parts = line.split()
-                if len(parts) < 7:  # need class + >=3 points
+                box = label_to_box(parts)
+                if box is None:
                     continue
-                coords = [float(v) for v in parts[1:]]
-                cx, cy, w, h = poly_to_box(coords)
-                if w <= 0 or h <= 0:
-                    continue
+                cx, cy, w, h = box
                 out_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
             # keep empty-label images too (valid negatives)
-            (DST / "labels" / split / f"{lbl.stem}.txt").write_text(
+            (dst / "labels" / split / f"{lbl.stem}.txt").write_text(
                 "\n".join(out_lines) + ("\n" if out_lines else "")
             )
-            dst_img = DST / "images" / split / img.name
+            dst_img = dst / "images" / split / img.name
             if not dst_img.exists():
                 shutil.copy2(img, dst_img)
             n_imgs += 1
             n_boxes += len(out_lines)
 
-    data_yaml = DST / "data.yaml"
+    data_yaml = dst / "data.yaml"
     data_yaml.write_text(
-        f"path: {DST.resolve()}\n"
+        f"path: {dst.resolve()}\n"
         "train: images/train\n"
         "val: images/val\n"
         "names:\n"

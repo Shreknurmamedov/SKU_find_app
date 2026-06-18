@@ -18,20 +18,29 @@ public class DemoProductAnalyzer implements ProductAnalyzer {
         detections.add(new ProductDetection(
                 clamp(new RectF(0.08f + drift, 0.16f, 0.34f + drift, 0.44f)),
                 true,
-                "recognized",
-                0.91f
+                "держите",
+                0.91f,
+                ProductDetection.STATE_GOOD,
+                0.72f,
+                0.07f
         ));
         detections.add(new ProductDetection(
                 clamp(new RectF(0.46f - drift, 0.20f, 0.76f - drift, 0.50f)),
                 false,
-                "unknown",
-                0.64f
+                "медленнее",
+                0.64f,
+                ProductDetection.STATE_BLUR,
+                0.24f,
+                0.09f
         ));
         detections.add(new ProductDetection(
                 clamp(new RectF(0.24f, 0.58f + drift, 0.62f, 0.86f + drift)),
-                true,
-                "own SKU",
-                0.78f
+                false,
+                "ближе",
+                0.78f,
+                ProductDetection.STATE_FAR,
+                0.65f,
+                0.025f
         ));
         return detections;
     }

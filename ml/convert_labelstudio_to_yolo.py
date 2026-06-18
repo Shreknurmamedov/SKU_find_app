@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-CLASS_TO_ID = {"own_product": 0, "competitor_or_unknown": 1}
+CLASS_TO_ID = {"own_product": 0, "competitor_or_unknown": 1, "product": 0}
 
 
 def main() -> None:

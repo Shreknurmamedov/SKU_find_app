@@ -84,6 +84,7 @@ public class MainActivity extends ComponentActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Executor mainExecutor = command -> mainHandler.post(command);
     private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
+    private final LiveCaptureTracker liveCaptureTracker = new LiveCaptureTracker();
     private TFLiteProductAnalyzer tfliteAnalyzer;
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
@@ -93,6 +94,10 @@ public class MainActivity extends ComponentActivity {
     private Recording activeRecording;
     private File recordedFile;
     private volatile boolean isRecording = false;
+    private static final float LIVE_SHARP_GOOD = 0.44f;
+    private static final float LIVE_SHARP_BLUR = 0.34f;
+    private static final float LIVE_MIN_AREA_READABLE = 0.026f;
+    private static final float LIVE_MIN_SIDE_READABLE = 0.115f;
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
@@ -243,6 +248,11 @@ public class MainActivity extends ComponentActivity {
         stopButton.setOnClickListener(view -> stopCamera());
         cameraButtons.addView(stopButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
+        Button resetLiveButton = new Button(this);
+        resetLiveButton.setText("Сброс снятого");
+        resetLiveButton.setOnClickListener(view -> resetLiveCapture());
+        cameraButtons.addView(resetLiveButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
         LinearLayout scanButtons = new LinearLayout(this);
         scanButtons.setOrientation(LinearLayout.HORIZONTAL);
         controls.addView(scanButtons, matchWrap());
@@ -380,6 +390,8 @@ public class MainActivity extends ComponentActivity {
             cameraProvider.unbindAll();
         }
         overlayView.setDetections(new ArrayList<>());
+        overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Камера остановлена");
+        liveCaptureTracker.reset();
         liveStatusText.setText("Камера остановлена.");
     }
 
@@ -396,6 +408,7 @@ public class MainActivity extends ComponentActivity {
             }
             return;
         }
+        liveCaptureTracker.reset();
         File dir = new File(getExternalFilesDir(null), "videos");
         if (!dir.exists()) {
             dir.mkdirs();
@@ -447,6 +460,7 @@ public class MainActivity extends ComponentActivity {
     private void resetScan() {
         scanGrid.reset();
         motionTracker.reset();
+        liveCaptureTracker.reset();
         havePrevAngles = false;
         coverageView.setState(new ArrayList<>(), new ArrayList<>(), 0, 0, 0, 0,
                 false, 0f, 0f, "", null, 0, 0, false);
@@ -456,22 +470,139 @@ public class MainActivity extends ComponentActivity {
         final List<ProductDetection> detections;
         final String statusText;
         if (tfliteAnalyzer != null && tfliteAnalyzer.isReady()) {
-            detections = tfliteAnalyzer.analyze(frame);
-            int uncertain = 0;
+            List<ProductDetection> raw = tfliteAnalyzer.analyze(frame);
+            List<ProductDetection> scored = scoreLiveQuality(frame, raw);
+            LiveCaptureTracker.Result tracked = liveCaptureTracker.update(scored);
+            detections = tracked.visibleDetections;
+            int blur = 0;
+            int closer = 0;
+            int aim = 0;
+            int hold = 0;
             for (ProductDetection d : detections) {
-                if (!d.recognized) {
-                    uncertain++;
+                if (d.qualityState == ProductDetection.STATE_BLUR) {
+                    blur++;
+                } else if (d.qualityState == ProductDetection.STATE_FAR) {
+                    closer++;
+                } else if (d.qualityState == ProductDetection.STATE_UNCERTAIN) {
+                    aim++;
+                } else if (d.qualityState == ProductDetection.STATE_GOOD) {
+                    hold++;
                 }
             }
-            statusText = "Товаров: " + detections.size() + ", на проверку (красные): " + uncertain;
+            String hint = liveHint(detections.size(), closer, blur, aim, hold,
+                    tracked.capturedCount);
+            statusText = "Осталось: " + detections.size()
+                    + " · " + hint
+                    + " · снято: " + tracked.capturedCount;
+            final int todo = detections.size();
+            final int captured = tracked.capturedCount;
+            final int retake = closer + blur + aim;
+            final int closerCount = closer;
+            final int blurCount = blur;
+            final int aimCount = aim;
+            final String hintFinal = hint;
+            runOnUiThread(() -> overlayView.setLiveSummary(
+                    todo, captured, retake, closerCount, blurCount, aimCount, hintFinal));
         } else {
             detections = productAnalyzer.analyze(null);
             statusText = "Демо-режим (модель не загрузилась)";
+            runOnUiThread(() -> overlayView.setLiveSummary(
+                    detections.size(), 0, detections.size(), 0, 0, detections.size(),
+                    "Демо-режим: проверьте модель"));
         }
         runOnUiThread(() -> {
             overlayView.setDetections(detections);
             liveStatusText.setText(statusText);
         });
+    }
+
+    private List<ProductDetection> scoreLiveQuality(RgbFrame frame, List<ProductDetection> raw) {
+        List<ProductDetection> result = new ArrayList<>();
+        for (ProductDetection d : raw) {
+            RectPixels px = toPixels(d.normalizedBounds, frame.width, frame.height);
+            float sharp = FrameQuality.sharpScore(
+                    LumaFrame.fromArgbRegion(frame, px.left, px.top, px.right, px.bottom, 96));
+            float boxW = Math.max(0f, d.normalizedBounds.width());
+            float boxH = Math.max(0f, d.normalizedBounds.height());
+            float area = boxW * boxH;
+            float minSide = Math.min(boxW, boxH);
+            boolean tooFar = area < LIVE_MIN_AREA_READABLE || minSide < LIVE_MIN_SIDE_READABLE;
+            int state;
+            boolean good;
+            String label;
+            if (tooFar) {
+                state = ProductDetection.STATE_FAR;
+                good = false;
+                label = "ближе";
+            } else if (sharp < LIVE_SHARP_BLUR) {
+                state = ProductDetection.STATE_BLUR;
+                good = false;
+                label = "медленнее";
+            } else if (!d.recognized || sharp < LIVE_SHARP_GOOD) {
+                state = ProductDetection.STATE_UNCERTAIN;
+                good = false;
+                label = "наведите";
+            } else {
+                state = ProductDetection.STATE_GOOD;
+                good = true;
+                label = "держите";
+            }
+            result.add(new ProductDetection(d.normalizedBounds, good, label,
+                    d.confidence, state, sharp, area));
+        }
+        return result;
+    }
+
+    private String liveHint(int todo, int closer, int blur, int aim, int hold, int captured) {
+        if (todo == 0) {
+            if (captured > 0) {
+                return "Эта зона снята, ведите дальше";
+            }
+            return "Наведите камеру на полку";
+        }
+        if (closer > 0) {
+            return "Подойдите ближе: товар мелкий для артикула";
+        }
+        if (blur > 0) {
+            return "Медленнее: кадр смазан";
+        }
+        if (aim > 0) {
+            return "Держите товар в центре";
+        }
+        if (hold > 0) {
+            return "Держите 1 секунду";
+        }
+        return "Ведите камеру по полке";
+    }
+
+    private RectPixels toPixels(android.graphics.RectF r, int width, int height) {
+        return new RectPixels(
+                Math.max(0, Math.min(width - 1, Math.round(r.left * width))),
+                Math.max(0, Math.min(height - 1, Math.round(r.top * height))),
+                Math.max(0, Math.min(width, Math.round(r.right * width))),
+                Math.max(0, Math.min(height, Math.round(r.bottom * height)))
+        );
+    }
+
+    private void resetLiveCapture() {
+        liveCaptureTracker.reset();
+        overlayView.setDetections(new ArrayList<>());
+        overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Наведите камеру на полку");
+        liveStatusText.setText("Память live-съёмки сброшена.");
+    }
+
+    private static class RectPixels {
+        final int left;
+        final int top;
+        final int right;
+        final int bottom;
+
+        RectPixels(int left, int top, int right, int bottom) {
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+        }
     }
 
     private void processScanFrame(RgbFrame frame, int rotation) {

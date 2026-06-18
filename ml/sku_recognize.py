@@ -20,10 +20,18 @@ import csv
 import re
 import sys
 from dataclasses import dataclass, asdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+
+# NOTE: ml.visual_reference is imported lazily inside Recognizer._reference() so
+# this module still runs as a standalone script (python3 ml/sku_recognize.py),
+# where the repo root is not on sys.path and `import ml...` would fail. We only
+# need the default index paths at import time, so keep them defined locally.
+DEFAULT_INDEX = Path("data/catalog/reference_index_yolo11n.npz")
+DEFAULT_METADATA = Path("data/catalog/reference_index_yolo11n.jsonl")
 
 CATALOG_CSV = Path("data/catalog/own_products.csv")
 
@@ -37,6 +45,15 @@ CONFUSABLES = str.maketrans(
     }
 )
 TOKEN_RE = re.compile(r"[0-9A-ZА-ЯЁ]+")
+ARTICLE_RE = re.compile(r"\d+(?:\s*[/\\-]\s*\d+){2,}")
+CODE_TRANSLIT = {
+    "Ё": "E", "Э": "E", "Л": "L", "И": "I", "Й": "I", "З": "3",
+}
+# A literal model/article code at least this long is discriminative enough to
+# commit to a specific SKU. Shorter or OCR-guessed codes are treated as a weak
+# hint that only fills in brand/category (business rule: never report a guessed
+# model when the article is not reliably readable -- brand + category instead).
+STRONG_KEY_LEN = 5
 
 
 def canon(text: str) -> str:
@@ -48,20 +65,62 @@ def compact(text: str) -> str:
     return "".join(TOKEN_RE.findall(canon(text)))
 
 
+def code_key_variants(key: str) -> set[str]:
+    """Variants for mixed Cyrillic/Latin model codes seen in OCR.
+
+    This is intentionally for model codes only, not article codes: it lets
+    catalog "ЭТ-20-2ЛИ" meet OCR "ET-20-2Li", and Huter "GET-20M-2Li" meet
+    a crop where the leading G was missed ("ET-20M-2Li").
+    """
+    variants = {key}
+    translit = "".join(CODE_TRANSLIT.get(c, c) for c in key)
+    variants.add(translit)
+    for item in list(variants):
+        if item.startswith("GET") and len(item) >= 7:
+            variants.add(item[1:])
+    return {v for v in variants if v}
+
+
 def model_keys(model: str) -> list[str]:
     """Discriminative compact keys for a model name.
 
     'DY5000LX/DY6500LX' -> ['DY5000LX', 'DY6500LX']
     'АВР-40I'           -> ['ABP40I']
+    'SP-3,7 Lite'       -> ['SP37LITE']
     Keeps only keys that contain a digit and are >= 4 chars, so generic words
     don't produce false hits.
     """
+    def is_variant_key(key: str) -> bool:
+        letters = sum(1 for c in key if c.isalpha())
+        return len(key) >= 4 and any(c.isdigit() for c in key) and letters >= 2
+
+    keys: set[str] = set()
+    variants = [model]
+    # Slash often separates model variants. Comma often means a decimal number
+    # in Russian model names (SP-3,7), so keep it inside the key.
+    if "/" in model or "\\" in model:
+        split_variants = re.split(r"[\\/]", model)
+        compact_variants = [compact(v) for v in split_variants]
+        if len(compact_variants) > 1 and all(is_variant_key(v) for v in compact_variants):
+            variants.extend(split_variants)
+    for variant in variants:
+        k = compact(variant)
+        if len(k) >= 4 and any(c.isdigit() for c in k):
+            keys.update(code_key_variants(k))
+    return sorted(keys, key=len, reverse=True)
+
+
+def article_keys(article_codes: str) -> list[str]:
     keys: list[str] = []
-    for variant in re.split(r"[\\/,]", model):
+    for variant in re.split(r"[|,;\s]+", article_codes or ""):
         k = compact(variant)
         if len(k) >= 4 and any(c.isdigit() for c in k):
             keys.append(k)
     return keys
+
+
+def looks_like_article(text: str) -> bool:
+    return bool(ARTICLE_RE.search(text))
 
 
 @dataclass
@@ -71,38 +130,64 @@ class CatalogEntry:
     is_own: bool
     category: str
     model: str
+    article_codes: str
+    model_keys: tuple[str, ...]
+    article_keys: tuple[str, ...]
     keys: tuple[str, ...]
     brand_canon: str
 
 
 @dataclass
 class RecognitionResult:
-    status: str            # "matched_sku" | "brand_only" | "unknown"
+    status: str            # "matched_sku" | "brand_only" | "category_only" | "unknown"
     is_own: bool
     brand: str | None
     model: str | None
     category: str | None
     sku_id: str | None
+    article_codes: str | None
     confidence: float
     method: str
     matched_key: str | None
     text: str
     rotation: int = 0
+    visual_score: float | None = None
+    visual_margin: float | None = None
+    reference_image: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
 class Recognizer:
-    def __init__(self, catalog_csv: Path = CATALOG_CSV, languages=("ru", "en")):
+    def __init__(
+        self,
+        catalog_csv: Path = CATALOG_CSV,
+        languages=("ru", "en"),
+        *,
+        reference_index: Path = DEFAULT_INDEX,
+        reference_metadata: Path = DEFAULT_METADATA,
+        visual_threshold: float = 0.78,
+        visual_margin: float = 0.035,
+    ):
         self.entries = self._load_catalog(catalog_csv)
         # brand canon -> display name (longest catalog spelling wins)
         self.brand_by_canon: dict[str, str] = {}
         for e in self.entries:
             self.brand_by_canon.setdefault(e.brand_canon, e.brand)
-        # key -> entry, longest keys first so the most specific match wins
-        self.key_index: list[tuple[str, CatalogEntry]] = sorted(
-            ((k, e) for e in self.entries for k in e.keys),
+        self._brand_canons = sorted(self.brand_by_canon.items(), key=lambda kv: -len(kv[0]))
+        # model key -> entry, longest keys first so the most specific match wins.
+        # Model codes are safe to find as substrings in compact OCR text
+        # (e.g. "SP-3,7 Lite" -> SP37LITE).
+        self.model_index: list[tuple[str, CatalogEntry]] = sorted(
+            ((k, e) for e in self.entries for k in e.model_keys),
+            key=lambda kv: -len(kv[0]),
+        )
+        # Article codes are more collision-prone: 73/7/2/6 must not match inside
+        # 73/7/2/26. We therefore match them only against explicit OCR article
+        # candidates/tokens, not as arbitrary substrings.
+        self.article_index: list[tuple[str, CatalogEntry]] = sorted(
+            ((k, e) for e in self.entries for k in e.article_keys),
             key=lambda kv: -len(kv[0]),
         )
         # category keyword -> coarse type label, for the "category but no model"
@@ -122,6 +207,11 @@ class Recognizer:
             cat_kw.items(), key=lambda kv: -len(kv[0]))
         self._reader = None
         self._languages = list(languages)
+        self._reference_index_path = reference_index
+        self._reference_metadata_path = reference_metadata
+        self._reference_index: VisualReferenceIndex | None = None
+        self._visual_threshold = visual_threshold
+        self._visual_margin = visual_margin
 
     @staticmethod
     def _load_catalog(path: Path) -> list[CatalogEntry]:
@@ -131,9 +221,14 @@ class Recognizer:
                 brand = (row.get("brand_name") or "").strip()
                 if not brand or brand == "-":
                     continue
-                keys = set(model_keys(row.get("model_name", "")))
+                mkeys = set(model_keys(row.get("model_name", "")))
+                akeys = set(article_keys(row.get("article_codes", "")))
                 for alias in (row.get("aliases") or "").split("|"):
-                    keys.update(model_keys(alias))
+                    if looks_like_article(alias):
+                        akeys.update(article_keys(alias))
+                    else:
+                        mkeys.update(model_keys(alias))
+                keys = mkeys | akeys
                 entries.append(
                     CatalogEntry(
                         sku_id=row.get("sku_id", ""),
@@ -141,6 +236,9 @@ class Recognizer:
                         is_own=(row.get("is_own_brand", "").strip().lower() == "true"),
                         category=(row.get("category") or "").strip(),
                         model=(row.get("model_name") or "").strip(),
+                        article_codes=(row.get("article_codes") or "").strip(),
+                        model_keys=tuple(sorted(mkeys)),
+                        article_keys=tuple(sorted(akeys)),
                         keys=tuple(sorted(keys)),
                         brand_canon=canon(brand),
                     )
@@ -172,65 +270,157 @@ class Recognizer:
         return np.array(image.convert("RGB"))
 
     # ---- matching ----------------------------------------------------------
+    @staticmethod
+    def _article_candidates(text: str) -> tuple[set[str], set[str]]:
+        explicit = {compact(m.group(0)) for m in ARTICLE_RE.finditer(canon(text))}
+        token = {compact(tok) for tok in TOKEN_RE.findall(canon(text))}
+        return {c for c in explicit if c}, {c for c in token if c}
+
+    @staticmethod
+    def _model_text_variants(comp: str) -> set[str]:
+        variants = set(code_key_variants(comp))
+        # Common OCR confusions in compact model codes:
+        # S can become 5, and Cyrillic/Latin С often becomes C while catalog SP
+        # stays Latin S. Keep this narrow to avoid making article matching fuzzy.
+        for candidate in list(variants):
+            if "5P" in candidate:
+                variants.add(candidate.replace("5P", "SP"))
+            if "CP" in candidate:
+                variants.add(candidate.replace("CP", "SP"))
+            if "3T" in candidate:
+                variants.add(candidate.replace("3T", "ET"))
+            if len(candidate) >= 5 and candidate.startswith("T") and candidate[1].isdigit():
+                variants.add("E" + candidate)
+        return variants
+
+    def _match_brand(self, tokens: set[str]) -> tuple[str | None, str | None]:
+        for bcanon, bname in self._brand_canons:
+            if bcanon in tokens:
+                return bname, bcanon
+        for token in tokens:
+            if len(token) < 5:
+                continue
+            for bcanon, bname in self._brand_canons:
+                if len(bcanon) < 5:
+                    continue
+                ratio = SequenceMatcher(None, token, bcanon).ratio()
+                if ratio >= 0.78:
+                    return bname, bcanon
+        return None, None
+
+    def _match_category(self, tokens: set[str]) -> tuple[str | None, str | None]:
+        for kw, cat in self.category_index:
+            if kw in tokens:
+                return cat, kw
+        return None, None
+
+    def _strong_specific_match(self, comp: str, explicit_articles: set[str],
+                               token_articles: set[str]):
+        """A specific SKU we can trust: an explicitly-read article, or a literal
+        model code long enough to be discriminative.
+
+        Returns (entry, key, method, confidence) or None. OCR-confusable guesses
+        and very short codes are deliberately excluded here -- they go through
+        the weak-hint path and only enrich brand/category.
+        """
+        # Explicit article pattern (e.g. "64/1/20"): low collision, trust it even
+        # when short. Must outrank model text, since several SKUs share a model.
+        for key, entry in self.article_index:
+            if key in explicit_articles:
+                return entry, key, "article_code", 0.9 if len(key) >= 6 else 0.78
+        # Literal / transliterated model code, long enough to be specific.
+        literal_texts = code_key_variants(comp) if comp else set()
+        for key, entry in self.model_index:
+            if len(key) >= STRONG_KEY_LEN and any(key in t for t in literal_texts):
+                return entry, key, "model_code", 0.9 if len(key) >= 6 else 0.8
+        # A long article read as a bare token (OCR dropped the separators).
+        for key, entry in self.article_index:
+            if len(key) >= 6 and key in token_articles:
+                return entry, key, "article_code", 0.9
+        return None
+
+    def _weak_specific_hint(self, comp: str, token_articles: set[str]):
+        """A plausible but collision-prone code match: a short code or an
+        OCR-confusable variant. Used only to fill in brand/category, never to
+        emit a guessed SKU. Returns (entry, key) or None."""
+        model_texts = self._model_text_variants(comp) if comp else set()
+        for key, entry in self.model_index:
+            if any(key in t for t in model_texts):
+                return entry, key
+        for key, entry in self.article_index:
+            if key in token_articles:
+                return entry, key
+        return None
+
     def match_text(self, text: str) -> RecognitionResult:
         comp = compact(text)
         # token set guards brand matching against substrings inside real words
         # (e.g. "ТЕКСТ" -> canon "TEKCT" must NOT match brand "TEK").
         tokens = set(TOKEN_RE.findall(canon(text)))
+        explicit_articles, token_articles = self._article_candidates(text)
 
-        # 1) model-code hit -> specific SKU (strongest signal)
-        if comp:
-            for key, entry in self.key_index:
-                if key in comp:
-                    conf = 0.9 if len(key) >= 6 else 0.78
-                    return RecognitionResult(
-                        status="matched_sku", is_own=entry.is_own,
-                        brand=entry.brand, model=entry.model,
-                        category=entry.category, sku_id=entry.sku_id,
-                        confidence=conf, method="model_code",
-                        matched_key=key, text=text,
-                    )
+        # 1) strong, trustworthy evidence -> commit to a specific SKU
+        if comp or explicit_articles:
+            strong = self._strong_specific_match(comp, explicit_articles, token_articles)
+            if strong is not None:
+                entry, key, method, conf = strong
+                return RecognitionResult(
+                    status="matched_sku", is_own=entry.is_own,
+                    brand=entry.brand, model=entry.model,
+                    category=entry.category, sku_id=entry.sku_id,
+                    article_codes=entry.article_codes,
+                    confidence=conf, method=method, matched_key=key, text=text,
+                )
 
         # Graceful fallback: brand and/or category from the printed words.
-        brand_found = brand_canon = None
-        for bcanon, bname in self.brand_by_canon.items():
-            if bcanon in tokens:
-                brand_found, brand_canon = bname, bcanon
-                break
-        cat_found = cat_kw = None
-        for kw, cat in self.category_index:
-            if kw in tokens:
-                cat_found, cat_kw = cat, kw
-                break
+        brand_found, brand_canon = self._match_brand(tokens)
+        cat_found, cat_kw = self._match_category(tokens)
 
-        # 2) brand known (model unresolved), category attached if also seen
+        # 2) weak code hint: the article is not reliably readable, so DON'T guess
+        # a model. Use the hint only to report brand + product category, which is
+        # far more robust than the exact SKU on a blurry/partial code.
+        method_brand = "brand_text"
+        is_own_brand = True
+        weak = self._weak_specific_hint(comp, token_articles) if comp else None
+        if weak is not None:
+            entry, key = weak
+            if brand_found is None and len(key) >= STRONG_KEY_LEN:
+                brand_found, brand_canon = entry.brand, entry.brand_canon
+                method_brand = "brand_from_code"
+                is_own_brand = entry.is_own
+            if cat_found is None and brand_canon == entry.brand_canon:
+                cat_found = entry.category or None
+
+        # 3) brand known (model unresolved), category attached when known
         if brand_found:
             return RecognitionResult(
-                status="brand_only", is_own=True, brand=brand_found, model=None,
-                category=cat_found, sku_id=None,
+                status="brand_only", is_own=is_own_brand, brand=brand_found,
+                model=None, category=cat_found, sku_id=None, article_codes=None,
                 confidence=0.62 if cat_found else 0.6,
-                method="brand+category" if cat_found else "brand_text",
+                method="brand+category" if cat_found else method_brand,
                 matched_key=brand_canon, text=text,
             )
 
-        # 3) only the product type (category) is readable, brand not seen
+        # 4) only the product type (category) is readable, brand not seen
         if cat_found:
             return RecognitionResult(
                 status="category_only", is_own=False, brand=None, model=None,
-                category=cat_found, sku_id=None, confidence=0.45,
+                category=cat_found, sku_id=None, article_codes=None, confidence=0.45,
                 method="category_text", matched_key=cat_kw, text=text,
             )
 
-        # 4) nothing readable -> brand not visible, manager must re-shoot
+        # 5) nothing readable -> brand not visible, manager must re-shoot
         return RecognitionResult(
             status="unknown", is_own=False, brand=None, model=None,
-            category=None, sku_id=None, confidence=0.3 if tokens else 0.15,
+            category=None, sku_id=None, article_codes=None,
+            confidence=0.3 if tokens else 0.15,
             method="no_match", matched_key=None, text=text,
         )
 
     _STATUS_RANK = {"matched_sku": 4, "brand_only": 3, "category_only": 2, "unknown": 1}
 
-    def recognize(self, image, rotations=(0, 270, 90, 180), min_side=80) -> RecognitionResult:
+    def recognize(self, image, rotations=(0, 270, 90, 180), min_side=80,
+                  enhance=True, use_visual=True) -> RecognitionResult:
         """OCR + match a crop, trying several rotations.
 
         Shelf photos/video frames often arrive rotated, and easyocr only reads
@@ -248,18 +438,103 @@ class Recognizer:
             pil = pil.resize((int(w * scale), int(h * scale)), _Image.LANCZOS)
 
         best: RecognitionResult | None = None
-        for rot in rotations:
-            rimg = pil if rot == 0 else pil.rotate(rot, expand=True)
-            res = self.match_text(self._ocr_array(_np.array(rimg)))
-            res.rotation = rot
-            if best is None or self._score(res) > self._score(best):
-                best = res
-            if best.status == "matched_sku":  # strongest signal, stop early
+        for variant in self._variants(pil, enhance=enhance):
+            for rot in rotations:
+                rimg = variant if rot == 0 else variant.rotate(rot, expand=True)
+                res = self.match_text(self._ocr_array(_np.array(rimg)))
+                res.rotation = rot
+                if best is None or self._score(res) > self._score(best):
+                    best = res
+                if best.status == "matched_sku":  # strongest signal, stop early
+                    break
+            if best is not None and best.status == "matched_sku":
                 break
+        if best is not None and best.status != "matched_sku" and use_visual:
+            visual = self._recognize_visual(pil, best.text)
+            if visual is not None and self._score(visual) > self._score(best):
+                best = visual
         return best  # type: ignore[return-value]
+
+    def recognize_visual(self, image, text: str = "") -> RecognitionResult | None:
+        import numpy as _np
+        from PIL import Image as _Image
+
+        arr = self._to_array(image)
+        pil = _Image.fromarray(arr) if isinstance(arr, _np.ndarray) else arr
+        return self._recognize_visual(pil, text)
 
     def _score(self, r: RecognitionResult) -> float:
         return self._STATUS_RANK.get(r.status, 0) * 10 + r.confidence + len(r.text) * 1e-4
+
+    @staticmethod
+    def _variants(pil, *, enhance: bool):
+        yield pil
+        if not enhance:
+            return
+        try:
+            from PIL import ImageEnhance, ImageFilter
+
+            img = pil.convert("RGB")
+            img = ImageEnhance.Contrast(img).enhance(1.35)
+            img = ImageEnhance.Sharpness(img).enhance(1.8)
+            yield img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=3))
+        except Exception:
+            return
+
+    def _reference(self):
+        if self._reference_index is None:
+            try:
+                from ml.visual_reference import VisualReferenceIndex
+            except ImportError:
+                # Running as a standalone script without the repo root on
+                # sys.path: visual fallback is simply unavailable, OCR still works.
+                return None
+            idx = VisualReferenceIndex(
+                self._reference_index_path,
+                self._reference_metadata_path,
+            )
+            if not idx.available():
+                return None
+            self._reference_index = idx
+        return self._reference_index
+
+    def _recognize_visual(self, pil, text: str) -> RecognitionResult | None:
+        ref = self._reference()
+        if ref is None:
+            return None
+        matches = ref.search(pil, topk_products=3)
+        if not matches:
+            return None
+        best = matches[0]
+        if best.score < self._visual_threshold or best.margin < self._visual_margin:
+            return None
+        meta = best.metadata
+        is_own = str(meta.get("is_in_own_catalog", "")).lower() == "true" or meta.get("dataset_role") == "own_target"
+        brand = meta.get("brand_name") or None
+        category = meta.get("category") or None
+        # Visual retrieval over reference photos is reliable for the coarse
+        # brand/category cluster, but similar packages give near-identical
+        # embeddings, so it must NOT commit to a specific model/SKU. Report
+        # brand + category only (business rule), never a guessed sku_id.
+        if not brand and not category:
+            return None
+        return RecognitionResult(
+            status="brand_only" if brand else "category_only",
+            is_own=is_own if brand else False,
+            brand=brand,
+            model=None,
+            category=category,
+            sku_id=None,
+            article_codes=None,
+            confidence=0.62 if (brand and category) else (0.6 if brand else 0.45),
+            method="visual_brand" if brand else "visual_category",
+            matched_key=best.product_key,
+            text=text,
+            rotation=0,
+            visual_score=round(best.score, 4),
+            visual_margin=round(best.margin, 4),
+            reference_image=best.reference_image,
+        )
 
 
 def main(argv: Iterable[str]) -> None:

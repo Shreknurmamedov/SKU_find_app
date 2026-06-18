@@ -1,0 +1,8 @@
+<View>
+  <Header value="Обведите каждый видимый товар одним прямоугольником. Не размечайте стены, полки, ценники и мебель."/>
+  <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="true"/>
+
+  <RectangleLabels name="bbox" toName="image" opacity="0.22">
+    <Label value="product" background="#24B667"/>
+  </RectangleLabels>
+</View>
