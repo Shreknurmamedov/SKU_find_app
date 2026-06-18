@@ -23,14 +23,11 @@ public class TFLiteProductAnalyzer {
 
     private static final String MODEL = "models/product_det_v2_float32.tflite";
     private static final int INPUT = 320;
-    // Display floor. Lowered back to 0.35: v7 was trained on the user's own
-    // walls/cabinets as hard negatives, so it suppresses them at the MODEL level
-    // (low confidence) — a high display threshold is no longer needed and was
-    // hiding real products (e.g. a clear Huter box). Let products show; the model
-    // keeps walls down.
-    private static final float CONF_THRESHOLD = 0.35f;
-    // Confident product (green) vs detected-but-uncertain (red, "проверить").
-    private static final float GREEN_CONF = 0.50f;
+    // Reverted to the v6 model (v7 hard-negatives over-suppressed real products:
+    // a clear Huter box scored only ~0.23-0.45 on v7 vs ~0.56-0.63 on v6). With
+    // v6, recall-first: show products at 0.45+, mark 0.6+ as confident (green).
+    private static final float CONF_THRESHOLD = 0.45f;
+    private static final float GREEN_CONF = 0.60f;
     private static final float IOU_THRESHOLD = 0.5f;
     private static final int MAX_DETECTIONS = 100;
     // Drop only near-full-frame boxes (walls/cabinets) and specks. 0.6 keeps big
