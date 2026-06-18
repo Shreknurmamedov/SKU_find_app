@@ -48,6 +48,7 @@ reports/auto_label_preview/
 # Generated evaluation / smoke-test output folders (reproducible from scripts).
 reports/holdout_eval_*/
 reports/model_smoke*/
+reports/overnight/
 
 # Built visual-retrieval index: derived from ml/build_reference_index.py, large
 # (~23 MB) and reproducible — treat like model weights, keep it out of git.
