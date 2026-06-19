@@ -1,11 +1,13 @@
 # Model Assets
 
-Place real on-device model assets here when they are ready.
+Generated Android TFLite assets are copied here by CI before APK build.
 
-Expected MVP files:
+Expected live files:
 
-- `product_segmentation.tflite`
-- `sku_recognition.tflite`
-- `labels.json`
+- `product_det_v2_float32.tflite` — one-class YOLO detector, finds product
+  candidates on-device.
+- `product_guard_cls_float32.tflite` — optional binary guard classifier:
+  `interior` vs `product`. If absent, the app falls back to detector +
+  heuristic filtering.
 
-The current Android app uses `DemoProductAnalyzer`, which draws live green/red overlays but does not perform real SKU recognition yet.
+Full SKU recognition (OCR/catalog/reference search) still runs on the backend.

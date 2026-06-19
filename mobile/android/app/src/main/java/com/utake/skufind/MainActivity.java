@@ -86,6 +86,7 @@ public class MainActivity extends ComponentActivity {
     private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
     private final LiveCaptureTracker liveCaptureTracker = new LiveCaptureTracker();
     private TFLiteProductAnalyzer tfliteAnalyzer;
+    private TFLiteProductGuard productGuard;
     private ExecutorService cameraExecutor;
     private ProcessCameraProvider cameraProvider;
 
@@ -98,12 +99,19 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_SHARP_BLUR = 0.34f;
     private static final float LIVE_MIN_AREA_READABLE = 0.026f;
     private static final float LIVE_MIN_SIDE_READABLE = 0.115f;
+    private static final float LIVE_CAPTURE_CONF = 0.70f;
     // On-device wall/floor/ceiling rejection: a box that is BOTH near-colourless
     // (low chroma) AND near-flat (low luma contrast) is a blank surface, not a
     // product. Both must be low (AND) so a white/grey package with text/edges
     // still survives via its contrast. Conservative on purpose — tune per device.
     private static final float LIVE_BG_CHROMA_MAX = 22f; // mean(max-min) over RGB, 0..255
     private static final float LIVE_BG_STD_MAX = 15f;    // luma std, 0..255
+    private static final float LIVE_MIN_EDGE_DENSITY = 0.035f;
+    private static final float LIVE_LARGE_BOX_AREA = 0.12f;
+    private static final float LIVE_LARGE_BOX_MIN_EDGE_DENSITY = 0.055f;
+    private static final float LIVE_LOW_DETAIL_STD_MAX = 24f;
+    private static final float LIVE_GUARD_MIN_PRODUCT = 0.55f;
+    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.70f;
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
@@ -140,6 +148,7 @@ public class MainActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         cameraExecutor = Executors.newSingleThreadExecutor();
         tfliteAnalyzer = new TFLiteProductAnalyzer(this);
+        productGuard = new TFLiteProductGuard(this);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
             rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
@@ -540,16 +549,27 @@ public class MainActivity extends ComponentActivity {
             // One luma read of the crop feeds both the sharpness score and the
             // re-id fingerprint, so the extra work per box stays cheap.
             LumaFrame luma = LumaFrame.fromArgbRegion(frame, px.left, px.top, px.right, px.bottom, 96);
-            // Drop blank wall/floor/ceiling boxes before they reach the manager:
-            // colourless AND flat -> not a product.
-            if (meanChroma(frame, px) < LIVE_BG_CHROMA_MAX && lumaStd(luma) < LIVE_BG_STD_MAX) {
-                continue;
-            }
-            float sharp = FrameQuality.sharpScore(luma);
             float boxW = Math.max(0f, d.normalizedBounds.width());
             float boxH = Math.max(0f, d.normalizedBounds.height());
             float area = boxW * boxH;
             float minSide = Math.min(boxW, boxH);
+            float chroma = meanChroma(frame, px);
+            float std = lumaStd(luma);
+            float edgeDensity = edgeDensity(luma);
+            // Drop blank wall/floor/ceiling boxes before they reach the manager:
+            // colourless AND flat -> not a product.
+            if (isLiveBackgroundLike(chroma, std, edgeDensity, area)) {
+                continue;
+            }
+            float productness = 1f;
+            if (productGuard != null && productGuard.isReady()) {
+                productness = productGuard.productProbability(
+                        frame, px.left, px.top, px.right, px.bottom);
+                if (productness < LIVE_GUARD_MIN_PRODUCT) {
+                    continue;
+                }
+            }
+            float sharp = FrameQuality.sharpScore(luma);
             boolean tooFar = area < LIVE_MIN_AREA_READABLE || minSide < LIVE_MIN_SIDE_READABLE;
             int state;
             boolean good;
@@ -562,7 +582,10 @@ public class MainActivity extends ComponentActivity {
                 state = ProductDetection.STATE_BLUR;
                 good = false;
                 label = "медленнее";
-            } else if (!d.recognized || sharp < LIVE_SHARP_GOOD) {
+            } else if (!d.recognized
+                    || d.confidence < LIVE_CAPTURE_CONF
+                    || productness < LIVE_GUARD_CAPTURE_PRODUCT
+                    || sharp < LIVE_SHARP_GOOD) {
                 state = ProductDetection.STATE_UNCERTAIN;
                 good = false;
                 label = "наведите";
@@ -574,6 +597,7 @@ public class MainActivity extends ComponentActivity {
             ProductDetection scored = new ProductDetection(d.normalizedBounds, good, label,
                     d.confidence, state, sharp, area);
             scored.signature = signatureFromLuma(luma, 8);
+            scored.productness = productness;
             result.add(scored);
         }
         return result;
@@ -650,6 +674,19 @@ public class MainActivity extends ComponentActivity {
         return "Ведите камеру по полке";
     }
 
+    private static boolean isLiveBackgroundLike(float chroma, float lumaStd,
+                                                float edgeDensity, float area) {
+        if (chroma < LIVE_BG_CHROMA_MAX && lumaStd < LIVE_BG_STD_MAX) {
+            return true;
+        }
+        if (edgeDensity < LIVE_MIN_EDGE_DENSITY && lumaStd < LIVE_LOW_DETAIL_STD_MAX) {
+            return true;
+        }
+        return area > LIVE_LARGE_BOX_AREA
+                && edgeDensity < LIVE_LARGE_BOX_MIN_EDGE_DENSITY
+                && lumaStd < LIVE_LOW_DETAIL_STD_MAX * 1.45f;
+    }
+
     /** Mean colourfulness (max-min over RGB, 0..255) of a box region, subsampled. */
     private static float meanChroma(RgbFrame frame, RectPixels px) {
         int rw = px.right - px.left;
@@ -693,6 +730,31 @@ public class MainActivity extends ComponentActivity {
         double mean = (double) sum / d.length;
         double var = (double) sumSq / d.length - mean * mean;
         return (float) Math.sqrt(Math.max(0, var));
+    }
+
+    /** Fraction of crop pixels with a meaningful local edge. Low = smooth furniture/wall. */
+    private static float edgeDensity(LumaFrame luma) {
+        if (luma == null || luma.width < 3 || luma.height < 3) {
+            return 0f;
+        }
+        int strong = 0;
+        int total = 0;
+        int w = luma.width;
+        int h = luma.height;
+        byte[] d = luma.data;
+        for (int y = 1; y < h - 1; y++) {
+            int row = y * w;
+            for (int x = 1; x < w - 1; x++) {
+                int i = row + x;
+                int gx = Math.abs((d[i + 1] & 0xff) - (d[i - 1] & 0xff));
+                int gy = Math.abs((d[i + w] & 0xff) - (d[i - w] & 0xff));
+                if (gx + gy > 42) {
+                    strong++;
+                }
+                total++;
+            }
+        }
+        return total > 0 ? strong / (float) total : 0f;
     }
 
     private RectPixels toPixels(android.graphics.RectF r, int width, int height) {

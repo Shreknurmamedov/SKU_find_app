@@ -29,8 +29,6 @@ def main() -> None:
     reports = read_reports(args.reports_dir)
     rows = []
     missing_reports = []
-    total_expected: set[str] = set()
-    total_predicted: set[str] = set()
 
     for video, expected in truth.items():
         report = reports.get(video)
@@ -39,11 +37,9 @@ def main() -> None:
             predicted = set()
         else:
             predicted = predicted_skus(report)
-        total_expected.update(expected)
-        total_predicted.update(predicted)
         rows.append(row_metrics(video, expected, predicted))
 
-    summary = metrics(total_expected, total_predicted)
+    summary = aggregate_rows(rows)
     summary["videos"] = len(rows)
     summary["missing_reports"] = missing_reports
     payload = {"summary": summary, "videos": rows}
@@ -101,9 +97,38 @@ def predicted_skus(report: dict) -> set[str]:
 def row_metrics(video: str, expected: set[str], predicted: set[str]) -> dict:
     m = metrics(expected, predicted)
     m["video"] = video
-    m["missing_skus"] = sorted(expected - predicted)
-    m["extra_skus"] = sorted(predicted - expected)
+    m["missing_sku_ids"] = sorted(expected - predicted)
+    m["extra_sku_ids"] = sorted(predicted - expected)
     return m
+
+
+def aggregate_rows(rows: list[dict]) -> dict:
+    """Micro-average SKU-presence metrics over videos.
+
+    Do not union SKU ids across videos: finding SKU_A in the wrong video must
+    remain one false negative plus one false positive, not a true positive.
+    """
+    expected = sum(int(row["expected_skus"]) for row in rows)
+    predicted = sum(int(row["predicted_skus"]) for row in rows)
+    matched = sum(int(row["matched_skus"]) for row in rows)
+    extra = sum(int(row["extra_skus"]) for row in rows)
+    missing = sum(int(row["missing_skus"]) for row in rows)
+    if matched + extra:
+        precision = matched / (matched + extra)
+    else:
+        precision = 1.0 if expected == 0 else 0.0
+    recall = matched / (matched + missing) if matched + missing else 1.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "expected_skus": expected,
+        "predicted_skus": predicted,
+        "matched_skus": matched,
+        "extra_skus": extra,
+        "missing_skus": missing,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 
 def metrics(expected: set[str], predicted: set[str]) -> dict:
@@ -149,12 +174,12 @@ def write_markdown(payload: dict, path: Path) -> None:
                      f"{row['missing_skus']} | {row['extra_skus']} | "
                      f"{row['recall']:.1%} | {row['precision']:.1%} |")
     for row in payload["videos"]:
-        if row["missing_skus"] or row["extra_skus"]:
+        if row["missing_sku_ids"] or row["extra_sku_ids"]:
             lines += ["", f"## {row['video']}", ""]
-            if row["missing_skus"]:
-                lines += ["Missing:"] + [f"- `{sku}`" for sku in row["missing_skus"]]
-            if row["extra_skus"]:
-                lines += ["Extra:"] + [f"- `{sku}`" for sku in row["extra_skus"]]
+            if row["missing_sku_ids"]:
+                lines += ["Missing:"] + [f"- `{sku}`" for sku in row["missing_sku_ids"]]
+            if row["extra_sku_ids"]:
+                lines += ["Extra:"] + [f"- `{sku}`" for sku in row["extra_sku_ids"]]
     if s["missing_reports"]:
         lines += ["", "## Missing Reports", ""]
         lines += [f"- `{video}`" for video in s["missing_reports"]]

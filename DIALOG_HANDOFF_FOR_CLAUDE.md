@@ -470,3 +470,36 @@ path/to/video1.mp4,"SKU_1;SKU_2;SKU_3"
 6. Следующий хороший шаг - собрать APK и проверить UX на реальном планшете, затем
    подкрутить пороги.
 
+---
+
+## 10. Обновление Codex 2026-06-19: отдельный on-device guard `товар vs интерьер`
+
+После live-проверки на Samsung Tab A9 стало ясно, что v6 YOLO на планшете всё ещё
+ложно выделяет стул, кулер, дверь, шкаф и мебель. Настоящий фикс выбран как
+двухступенчатый live pipeline: YOLO только предлагает crop, а отдельный маленький
+классификатор `TFLiteProductGuard` решает `interior` vs `product` до попадания в
+оверлей и `LiveCaptureTracker`.
+
+Сделано:
+- `ml/build_product_guard_dataset.py` — датасет `train/val × interior/product`;
+- `ml/train_product_guard.py` — обучение YOLO classification;
+- `weights/product_guard_cls.pt` — обученный guard (~3 МБ, должен быть закоммичен);
+- `ml/export_product_guard_tflite.py` — экспорт в Android asset
+  `product_guard_cls_float32.tflite`;
+- `mobile/android/.../TFLiteProductGuard.java` — on-device inference;
+- `MainActivity` — guard применяется перед live feedback; для `Готово` нужен
+  `productness >= 0.70`;
+- `.github/workflows/android-apk.yml` — экспорт guard в CI;
+- `docs/product-guard.md` — команды, данные, проверка.
+
+Данные:
+- product: эталонные фото из `reference_dataset_all` + реальные Huter-crop с
+  планшета;
+- interior: crop-ы из планшетных записей комнаты/кулера/двери/стула.
+
+Probe на локальных crop-ах: 8/8 correct. Huter → `product_prob ~0.999`; кулер,
+дверь, стул, шкаф → почти 0.
+
+Ограничение: локальный TFLite export на macOS + Python 3.13 не работает из-за
+Ultralytics/TensorFlow Lite, поэтому финальный APK надо собрать через GitHub
+Actions на Ubuntu, установить на планшет и повторить `adb screenrecord`.

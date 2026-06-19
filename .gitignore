@@ -16,11 +16,12 @@ ml/datasets/
 ml/runs/
 runs/
 ml/weights/
-weights/
+weights/*
 *.pt
 *.pth
 *.onnx
 *.tflite
+!weights/product_guard_cls.pt
 mobileclip_blt.ts
 # but DO ship the on-device model bundled in the Android APK
 !mobile/android/app/src/main/assets/models/*.tflite
@@ -50,6 +51,7 @@ reports/holdout_eval_*/
 reports/model_smoke*/
 reports/overnight/
 reports/labeling/
+reports/product_guard_probe/
 
 # Built visual-retrieval index: derived from ml/build_reference_index.py, large
 # (~23 MB) and reproducible — treat like model weights, keep it out of git.

@@ -24,10 +24,11 @@ public class TFLiteProductAnalyzer {
     private static final String MODEL = "models/product_det_v2_float32.tflite";
     private static final int INPUT = 320;
     // Reverted to the v6 model (v7 hard-negatives over-suppressed real products:
-    // a clear Huter box scored only ~0.23-0.45 on v7 vs ~0.56-0.63 on v6). With
-    // v6, recall-first: show products at 0.45+, mark 0.6+ as confident (green).
-    private static final float CONF_THRESHOLD = 0.45f;
-    private static final float GREEN_CONF = 0.60f;
+    // a clear Huter box scored only ~0.23-0.45 on v7 vs ~0.56-0.63 on v6).
+    // The backend can stay recall-first; live feedback must be conservative
+    // because false boxes become "captured" noise for the manager.
+    private static final float CONF_THRESHOLD = 0.55f;
+    private static final float GREEN_CONF = 0.70f;
     private static final float IOU_THRESHOLD = 0.5f;
     private static final int MAX_DETECTIONS = 100;
     // Drop only near-full-frame boxes (walls/cabinets) and specks. 0.6 keeps big

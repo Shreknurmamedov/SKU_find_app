@@ -29,6 +29,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install "numpy<2" ultralytics
           python ml/export_tflite.py
+          if [ -f weights/product_guard_cls.pt ]; then
+            python ml/export_product_guard_tflite.py
+          else
+            echo "weights/product_guard_cls.pt not found; building APK without product guard asset"
+          fi
           ls -la mobile/android/app/src/main/assets/models/
 
       - name: Set up Android SDK

@@ -26,7 +26,7 @@ import java.util.List;
 public class LiveCaptureTracker {
     private static final float MATCH_IOU = 0.28f;        // same product, frame-to-frame
     private static final float APPEARANCE_MATCH = 0.62f; // re-id after the box moved/left
-    private static final int GOOD_FRAMES_TO_CAPTURE = 3;
+    private static final int GOOD_FRAMES_TO_CAPTURE = 8;
     private static final int DROP_MISSED_AFTER = 40;
     private static final int KEEP_CAPTURED_MISSED = 600; // remember captured items much longer
     private static final int MAX_TRACKS = 240;           // bound memory on long scans

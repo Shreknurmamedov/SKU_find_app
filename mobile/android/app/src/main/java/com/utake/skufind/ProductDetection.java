@@ -23,6 +23,7 @@ public class ProductDetection {
      * still server-side; this only binds the live box to a stable product identity.
      */
     public float[] signature;
+    public float productness = 1f;
 
     public ProductDetection(RectF normalizedBounds, boolean recognized, String label, float confidence) {
         this(normalizedBounds, recognized, label, confidence,

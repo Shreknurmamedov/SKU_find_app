@@ -102,15 +102,12 @@ def run_sweep(truth, videos, *, device, configs, reuse_tracks, max_videos,
 
 def score_config(truth, reports_dir: Path) -> dict:
     reports = evalcov.read_reports(reports_dir)
-    total_exp, total_pred = set(), set()
     per_video = []
     for video, expected in truth.items():
         report = reports.get(video)
         predicted = evalcov.predicted_skus(report) if report else set()
-        total_exp |= expected
-        total_pred |= predicted
         per_video.append(evalcov.row_metrics(video, expected, predicted))
-    m = evalcov.metrics(total_exp, total_pred)
+    m = evalcov.aggregate_rows(per_video)
     m["per_video"] = per_video
     return m
 
