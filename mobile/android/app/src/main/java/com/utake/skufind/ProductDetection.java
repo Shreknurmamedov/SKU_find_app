@@ -15,6 +15,14 @@ public class ProductDetection {
     public final int qualityState;
     public final float sharpness;
     public final float areaFraction;
+    /**
+     * Lightweight on-device appearance fingerprint of the crop (mean-removed,
+     * L2-normalized 8x8 luma, 64 floats), or null. Lets {@link LiveCaptureTracker}
+     * re-identify the same physical product after the camera pans away and back,
+     * so an already-captured item is not outlined again. Full SKU recognition is
+     * still server-side; this only binds the live box to a stable product identity.
+     */
+    public float[] signature;
 
     public ProductDetection(RectF normalizedBounds, boolean recognized, String label, float confidence) {
         this(normalizedBounds, recognized, label, confidence,

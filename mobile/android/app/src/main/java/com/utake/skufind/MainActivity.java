@@ -389,6 +389,7 @@ public class MainActivity extends ComponentActivity {
         if (cameraProvider != null) {
             cameraProvider.unbindAll();
         }
+        overlayView.setCapturedMarks(new ArrayList<>());
         overlayView.setDetections(new ArrayList<>());
         overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Камера остановлена");
         liveCaptureTracker.reset();
@@ -468,12 +469,14 @@ public class MainActivity extends ComponentActivity {
 
     private void runDetection(RgbFrame frame) {
         final List<ProductDetection> detections;
+        final List<android.graphics.RectF> capturedMarks;
         final String statusText;
         if (tfliteAnalyzer != null && tfliteAnalyzer.isReady()) {
             List<ProductDetection> raw = tfliteAnalyzer.analyze(frame);
             List<ProductDetection> scored = scoreLiveQuality(frame, raw);
             LiveCaptureTracker.Result tracked = liveCaptureTracker.update(scored);
             detections = tracked.visibleDetections;
+            capturedMarks = tracked.capturedBoxes;
             int blur = 0;
             int closer = 0;
             int aim = 0;
@@ -505,12 +508,14 @@ public class MainActivity extends ComponentActivity {
                     todo, captured, retake, closerCount, blurCount, aimCount, hintFinal));
         } else {
             detections = productAnalyzer.analyze(null);
+            capturedMarks = new ArrayList<>();
             statusText = "Демо-режим (модель не загрузилась)";
             runOnUiThread(() -> overlayView.setLiveSummary(
                     detections.size(), 0, detections.size(), 0, 0, detections.size(),
                     "Демо-режим: проверьте модель"));
         }
         runOnUiThread(() -> {
+            overlayView.setCapturedMarks(capturedMarks);
             overlayView.setDetections(detections);
             liveStatusText.setText(statusText);
         });
@@ -520,8 +525,10 @@ public class MainActivity extends ComponentActivity {
         List<ProductDetection> result = new ArrayList<>();
         for (ProductDetection d : raw) {
             RectPixels px = toPixels(d.normalizedBounds, frame.width, frame.height);
-            float sharp = FrameQuality.sharpScore(
-                    LumaFrame.fromArgbRegion(frame, px.left, px.top, px.right, px.bottom, 96));
+            // One luma read of the crop feeds both the sharpness score and the
+            // re-id fingerprint, so the extra work per box stays cheap.
+            LumaFrame luma = LumaFrame.fromArgbRegion(frame, px.left, px.top, px.right, px.bottom, 96);
+            float sharp = FrameQuality.sharpScore(luma);
             float boxW = Math.max(0f, d.normalizedBounds.width());
             float boxH = Math.max(0f, d.normalizedBounds.height());
             float area = boxW * boxH;
@@ -547,10 +554,61 @@ public class MainActivity extends ComponentActivity {
                 good = true;
                 label = "держите";
             }
-            result.add(new ProductDetection(d.normalizedBounds, good, label,
-                    d.confidence, state, sharp, area));
+            ProductDetection scored = new ProductDetection(d.normalizedBounds, good, label,
+                    d.confidence, state, sharp, area);
+            scored.signature = signatureFromLuma(luma, 8);
+            result.add(scored);
         }
         return result;
+    }
+
+    /**
+     * Mean-removed, L2-normalized grid×grid luma fingerprint of a crop, or null.
+     * Mean-removal makes it brightness-invariant and L2-normalization
+     * contrast-invariant, so the same product matches across lighting changes
+     * while staying cheap (64 floats). Used by {@link LiveCaptureTracker} for re-id.
+     */
+    private static float[] signatureFromLuma(LumaFrame luma, int grid) {
+        if (luma == null || luma.width < grid || luma.height < grid) {
+            return null;
+        }
+        float[] sig = new float[grid * grid];
+        for (int gy = 0; gy < grid; gy++) {
+            int y0 = gy * luma.height / grid;
+            int y1 = Math.max(y0 + 1, (gy + 1) * luma.height / grid);
+            for (int gx = 0; gx < grid; gx++) {
+                int x0 = gx * luma.width / grid;
+                int x1 = Math.max(x0 + 1, (gx + 1) * luma.width / grid);
+                int sum = 0;
+                int cnt = 0;
+                for (int y = y0; y < y1; y++) {
+                    int row = y * luma.width;
+                    for (int x = x0; x < x1; x++) {
+                        sum += luma.data[row + x] & 0xff;
+                        cnt++;
+                    }
+                }
+                sig[gy * grid + gx] = cnt > 0 ? (float) sum / cnt : 0f;
+            }
+        }
+        float mean = 0f;
+        for (float v : sig) {
+            mean += v;
+        }
+        mean /= sig.length;
+        double sumSq = 0;
+        for (int i = 0; i < sig.length; i++) {
+            sig[i] -= mean;
+            sumSq += (double) sig[i] * sig[i];
+        }
+        float norm = (float) Math.sqrt(sumSq);
+        if (norm < 1e-6f) {
+            return null; // flat patch (wall/shadow) -> no usable fingerprint
+        }
+        for (int i = 0; i < sig.length; i++) {
+            sig[i] /= norm;
+        }
+        return sig;
     }
 
     private String liveHint(int todo, int closer, int blur, int aim, int hold, int captured) {
@@ -586,6 +644,7 @@ public class MainActivity extends ComponentActivity {
 
     private void resetLiveCapture() {
         liveCaptureTracker.reset();
+        overlayView.setCapturedMarks(new ArrayList<>());
         overlayView.setDetections(new ArrayList<>());
         overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Наведите камеру на полку");
         liveStatusText.setText("Память live-съёмки сброшена.");

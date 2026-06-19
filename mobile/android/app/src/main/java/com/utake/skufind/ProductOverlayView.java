@@ -21,6 +21,7 @@ public class ProductOverlayView extends View {
     private final Paint textBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint bannerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<ProductDetection> detections = new ArrayList<>();
+    private final List<RectF> capturedMarks = new ArrayList<>();
     private int todoCount = 0;
     private int capturedCount = 0;
     private int retakeCount = 0;
@@ -57,6 +58,16 @@ public class ProductOverlayView extends View {
     public void setDetections(List<ProductDetection> newDetections) {
         detections.clear();
         detections.addAll(newDetections);
+        invalidate();
+    }
+
+    /** Centres (normalized) of products already captured well — drawn as a small
+     *  green ✓ instead of a box, so the manager sees they are done, not pending. */
+    public void setCapturedMarks(List<RectF> marks) {
+        capturedMarks.clear();
+        if (marks != null) {
+            capturedMarks.addAll(marks);
+        }
         invalidate();
     }
 
@@ -118,7 +129,29 @@ public class ProductOverlayView extends View {
             canvas.drawRoundRect(labelBackground, 8f, 8f, textBackgroundPaint);
             canvas.drawText(label, labelBackground.left + 12f, labelBackground.bottom - 11f, textPaint);
         }
+        drawCapturedMarks(canvas, width, height);
         drawHintBanner(canvas, width, height);
+    }
+
+    private void drawCapturedMarks(Canvas canvas, int width, int height) {
+        if (capturedMarks.isEmpty()) {
+            return;
+        }
+        int green = Color.rgb(36, 182, 103);
+        fillPaint.setColor(withAlpha(green, 235));
+        strokePaint.setColor(Color.WHITE);
+        strokePaint.setStrokeWidth(4f);
+        for (RectF nb : capturedMarks) {
+            float cx = (nb.left + nb.right) * 0.5f * width;
+            float cy = (nb.top + nb.bottom) * 0.5f * height;
+            canvas.drawCircle(cx, cy, 17f, fillPaint);
+            Path check = new Path();
+            check.moveTo(cx - 8f, cy + 1f);
+            check.lineTo(cx - 2f, cy + 7f);
+            check.lineTo(cx + 9f, cy - 7f);
+            canvas.drawPath(check, strokePaint);
+        }
+        strokePaint.setStrokeWidth(5f); // restore the box stroke width
     }
 
     private void drawSummary(Canvas canvas, int width) {
