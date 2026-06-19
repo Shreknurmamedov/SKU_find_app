@@ -110,8 +110,8 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_LARGE_BOX_AREA = 0.12f;
     private static final float LIVE_LARGE_BOX_MIN_EDGE_DENSITY = 0.055f;
     private static final float LIVE_LOW_DETAIL_STD_MAX = 24f;
-    private static final float LIVE_GUARD_MIN_PRODUCT = 0.55f;
-    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.70f;
+    private static final float LIVE_GUARD_MIN_PRODUCT = 0.75f;
+    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.88f;
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
