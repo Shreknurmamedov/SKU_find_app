@@ -98,6 +98,12 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_SHARP_BLUR = 0.34f;
     private static final float LIVE_MIN_AREA_READABLE = 0.026f;
     private static final float LIVE_MIN_SIDE_READABLE = 0.115f;
+    // On-device wall/floor/ceiling rejection: a box that is BOTH near-colourless
+    // (low chroma) AND near-flat (low luma contrast) is a blank surface, not a
+    // product. Both must be low (AND) so a white/grey package with text/edges
+    // still survives via its contrast. Conservative on purpose — tune per device.
+    private static final float LIVE_BG_CHROMA_MAX = 22f; // mean(max-min) over RGB, 0..255
+    private static final float LIVE_BG_STD_MAX = 15f;    // luma std, 0..255
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
@@ -197,10 +203,15 @@ public class MainActivity extends ComponentActivity {
 
         FrameLayout cameraFrame = new FrameLayout(this);
         cameraFrame.setBackgroundColor(0xFF111111);
+        // Camera is the main surface: give it the bulk of the screen (weight 2)
+        // so the manager actually sees what is highlighted; the control panel
+        // below scrolls within the remaining third (weight 1). Without this the
+        // WRAP_CONTENT controls ate all the height and squeezed the preview to a
+        // thin strip in landscape.
         root.addView(cameraFrame, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
-                1f
+                2f
         ));
 
         previewView = new PreviewView(this);
@@ -226,7 +237,8 @@ public class MainActivity extends ComponentActivity {
         ScrollView controlsScroll = new ScrollView(this);
         root.addView(controlsScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                0,
+                1f
         ));
 
         LinearLayout controls = new LinearLayout(this);
@@ -528,6 +540,11 @@ public class MainActivity extends ComponentActivity {
             // One luma read of the crop feeds both the sharpness score and the
             // re-id fingerprint, so the extra work per box stays cheap.
             LumaFrame luma = LumaFrame.fromArgbRegion(frame, px.left, px.top, px.right, px.bottom, 96);
+            // Drop blank wall/floor/ceiling boxes before they reach the manager:
+            // colourless AND flat -> not a product.
+            if (meanChroma(frame, px) < LIVE_BG_CHROMA_MAX && lumaStd(luma) < LIVE_BG_STD_MAX) {
+                continue;
+            }
             float sharp = FrameQuality.sharpScore(luma);
             float boxW = Math.max(0f, d.normalizedBounds.width());
             float boxH = Math.max(0f, d.normalizedBounds.height());
@@ -631,6 +648,51 @@ public class MainActivity extends ComponentActivity {
             return "Держите 1 секунду";
         }
         return "Ведите камеру по полке";
+    }
+
+    /** Mean colourfulness (max-min over RGB, 0..255) of a box region, subsampled. */
+    private static float meanChroma(RgbFrame frame, RectPixels px) {
+        int rw = px.right - px.left;
+        int rh = px.bottom - px.top;
+        if (rw < 2 || rh < 2) {
+            return 255f; // too small to judge -> don't reject as background
+        }
+        int stepX = Math.max(1, rw / 24);
+        int stepY = Math.max(1, rh / 24);
+        long sum = 0;
+        int n = 0;
+        for (int y = px.top; y < px.bottom; y += stepY) {
+            int row = y * frame.width;
+            for (int x = px.left; x < px.right; x += stepX) {
+                int p = frame.argb[row + x];
+                int r = (p >> 16) & 0xff;
+                int g = (p >> 8) & 0xff;
+                int b = p & 0xff;
+                int mx = Math.max(r, Math.max(g, b));
+                int mn = Math.min(r, Math.min(g, b));
+                sum += (mx - mn);
+                n++;
+            }
+        }
+        return n > 0 ? (float) sum / n : 255f;
+    }
+
+    /** Standard deviation of luma (0..255) — low means a flat, texture-less patch. */
+    private static float lumaStd(LumaFrame luma) {
+        if (luma == null || luma.data.length == 0) {
+            return 255f;
+        }
+        byte[] d = luma.data;
+        long sum = 0;
+        long sumSq = 0;
+        for (byte value : d) {
+            int v = value & 0xff;
+            sum += v;
+            sumSq += (long) v * v;
+        }
+        double mean = (double) sum / d.length;
+        double var = (double) sumSq / d.length - mean * mean;
+        return (float) Math.sqrt(Math.max(0, var));
     }
 
     private RectPixels toPixels(android.graphics.RectF r, int width, int height) {
