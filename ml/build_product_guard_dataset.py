@@ -10,11 +10,11 @@ This builder creates an ImageFolder classification dataset:
       val/interior/*.jpg
       val/product/*.jpg
 
-Positive examples come from the reference product photos. Negative examples are
-random crops from tablet room/screenrecord videos where the current live app was
-seeing false detections. The resulting classifier is a second on-device guard:
-YOLO proposes a box, the guard decides whether the crop looks like packaged
-retail product or room/interior.
+Positive examples come from the reference product photos plus curated real
+camera crops. Negative examples are random crops from tablet room/screenrecord
+videos and curated hard-negative crops where YOLO saw interior as product. The
+resulting classifier is a second on-device guard: YOLO proposes a box, the guard
+decides whether the crop looks like retail product or room/interior.
 """
 from __future__ import annotations
 
@@ -37,6 +37,9 @@ DEFAULT_NEGATIVE_VIDEOS = [
     "var/tablet/sku_live_debug.mp4:16-24",
     "var/tablet/cap4.mp4",
     "var/tablet/cap_live.mp4:6-9",
+]
+DEFAULT_NEGATIVE_EXTRA_DIRS = [
+    Path("var/tablet/product_guard_negative"),
 ]
 
 
@@ -86,6 +89,20 @@ def product_paths(metadata: Path, limit: int, seed: int,
     return selected
 
 
+def image_paths(extra_dirs: list[Path] | None, limit: int, seed: int) -> list[Path]:
+    rows: list[Path] = []
+    for extra_dir in extra_dirs or []:
+        root = extra_dir if extra_dir.is_absolute() else REPO / extra_dir
+        if not root.exists():
+            continue
+        for p in sorted(root.rglob("*")):
+            if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                rows.append(p)
+    rng = random.Random(seed)
+    rng.shuffle(rows)
+    return rows[:limit] if limit else rows
+
+
 def link_or_copy(src: Path, dst: Path, copy: bool) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if copy:
@@ -104,6 +121,28 @@ def write_products(paths: list[Path], out: Path, val_frac: float, copy: bool, se
         for i, src in enumerate(items):
             ext = src.suffix.lower() if src.suffix else ".jpg"
             dst = out / split / "product" / f"product_{i:05d}{ext}"
+            link_or_copy(src, dst, copy)
+            summary[split] += 1
+    return summary
+
+
+def existing_count(out: Path, split: str, cls: str) -> int:
+    root = out / split / cls
+    return len([p for p in root.glob("*") if p.is_file() or p.is_symlink()])
+
+
+def write_negative_images(paths: list[Path], out: Path, val_frac: float,
+                          copy: bool, seed: int) -> dict:
+    rng = random.Random(seed)
+    paths = list(paths)
+    rng.shuffle(paths)
+    n_val = max(1, int(len(paths) * val_frac)) if paths else 0
+    summary = {"train": 0, "val": 0}
+    for split, items in (("val", paths[:n_val]), ("train", paths[n_val:])):
+        offset = existing_count(out, split, "interior")
+        for i, src in enumerate(items):
+            ext = src.suffix.lower() if src.suffix else ".jpg"
+            dst = out / split / "interior" / f"interior_extra_{offset + i:05d}{ext}"
             link_or_copy(src, dst, copy)
             summary[split] += 1
     return summary
@@ -204,6 +243,10 @@ def main() -> None:
                     help="extra real-camera product crops to include")
     ap.add_argument("--negative-video", action="append", default=None,
                     help="video[:start-end] used for interior crops")
+    ap.add_argument("--negative-extra-dir", action="append", type=Path,
+                    default=DEFAULT_NEGATIVE_EXTRA_DIRS,
+                    help="extra curated interior/hard-negative crops to include")
+    ap.add_argument("--negative-extra-limit", type=int, default=2400)
     ap.add_argument("--crops-per-frame", type=int, default=12)
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--copy-products", action="store_true",
@@ -220,12 +263,18 @@ def main() -> None:
     interior_summary = write_negatives(
         video_specs, args.out, args.negative_limit, args.val_frac,
         args.seed, args.crops_per_frame)
+    negative_extra = image_paths(
+        args.negative_extra_dir, args.negative_extra_limit, args.seed)
+    negative_extra_summary = write_negative_images(
+        negative_extra, args.out, args.val_frac, args.copy_products, args.seed)
     summary = {
         "classes": ["interior", "product"],
         "product": product_summary,
         "interior": interior_summary,
+        "interior_extra": negative_extra_summary,
         "metadata": str(args.metadata),
         "negative_videos": [str(v) for v in (args.negative_video or DEFAULT_NEGATIVE_VIDEOS)],
+        "negative_extra_dirs": [str(v) for v in args.negative_extra_dir],
     }
     (args.out / "dataset_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
