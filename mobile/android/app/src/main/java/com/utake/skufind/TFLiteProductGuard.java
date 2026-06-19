@@ -2,6 +2,7 @@ package com.utake.skufind;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.util.Log;
 
 import org.tensorflow.lite.Interpreter;
 
@@ -19,6 +20,7 @@ import java.nio.channels.FileChannel;
  * to detector+heuristics. Full SKU recognition still happens server-side.
  */
 public class TFLiteProductGuard {
+    private static final String TAG = "SKUProductGuard";
     private static final String MODEL = "models/product_guard_cls_float32.tflite";
     private static final int PRODUCT_CLASS_INDEX = 1;
 
@@ -40,9 +42,12 @@ public class TFLiteProductGuard {
             }
             int[] out = interpreter.getOutputTensor(0).shape();
             outputClasses = out[out.length - 1];
+            Log.i(TAG, "Loaded " + MODEL + " input=" + inputSize
+                    + " channelsLast=" + channelsLast + " classes=" + outputClasses);
         } catch (Exception e) {
             interpreter = null;
             error = e.getMessage();
+            Log.e(TAG, "Failed to load " + MODEL + ": " + error, e);
         }
     }
 
@@ -54,6 +59,13 @@ public class TFLiteProductGuard {
         return error;
     }
 
+    public String statusLabel() {
+        if (isReady()) {
+            return "guard:on";
+        }
+        return "guard:off" + (error == null ? "" : " (" + error + ")");
+    }
+
     public float productProbability(RgbFrame frame, int left, int top, int right, int bottom) {
         if (interpreter == null || frame == null) {
             return 1f;
@@ -62,11 +74,17 @@ public class TFLiteProductGuard {
         top = Math.max(0, Math.min(frame.height - 1, top));
         right = Math.max(left + 1, Math.min(frame.width, right));
         bottom = Math.max(top + 1, Math.min(frame.height, bottom));
-        float[] raw = run(frame, left, top, right, bottom);
-        if (raw == null || raw.length <= PRODUCT_CLASS_INDEX) {
-            return 1f;
+        try {
+            float[] raw = run(frame, left, top, right, bottom);
+            if (raw == null || raw.length <= PRODUCT_CLASS_INDEX) {
+                return 0f;
+            }
+            return probabilityAt(raw, PRODUCT_CLASS_INDEX);
+        } catch (Exception e) {
+            error = e.getMessage();
+            Log.e(TAG, "Guard inference failed: " + error, e);
+            return 0f;
         }
-        return probabilityAt(raw, PRODUCT_CLASS_INDEX);
     }
 
     private MappedByteBuffer loadModel(Context ctx) throws Exception {

@@ -376,10 +376,12 @@ public class MainActivity extends ComponentActivity {
         analysis.setAnalyzer(cameraExecutor, image -> {
             RgbFrame frame = RgbFrame.from(image);
             if (frame != null) {
+                int rotation = image.getImageInfo().getRotationDegrees();
+                RgbFrame displayFrame = frame.rotated(rotation);
                 if (scanMode) {
-                    processScanFrame(frame, image.getImageInfo().getRotationDegrees());
+                    processScanFrame(displayFrame, 0);
                 } else {
-                    runDetection(frame);
+                    runDetection(displayFrame);
                 }
             }
             image.close();
@@ -517,7 +519,8 @@ public class MainActivity extends ComponentActivity {
                     tracked.capturedCount);
             statusText = "Осталось: " + detections.size()
                     + " · " + hint
-                    + " · снято: " + tracked.capturedCount;
+                    + " · снято: " + tracked.capturedCount
+                    + " · " + guardStatus();
             final int todo = detections.size();
             final int captured = tracked.capturedCount;
             final int retake = closer + blur + aim;
@@ -540,6 +543,10 @@ public class MainActivity extends ComponentActivity {
             overlayView.setDetections(detections);
             liveStatusText.setText(statusText);
         });
+    }
+
+    private String guardStatus() {
+        return productGuard == null ? "guard:missing" : productGuard.statusLabel();
     }
 
     private List<ProductDetection> scoreLiveQuality(RgbFrame frame, List<ProductDetection> raw) {

@@ -50,6 +50,57 @@ public final class RgbFrame {
         return new RgbFrame(argb, w, h);
     }
 
+    /**
+     * CameraX delivers analysis frames in sensor coordinates while PreviewView
+     * rotates the visible preview for display. Rotate the pixels before
+     * detection so normalized boxes, guard crops and overlay coordinates all
+     * describe what the manager actually sees.
+     */
+    public RgbFrame rotated(int degrees) {
+        int normalized = ((degrees % 360) + 360) % 360;
+        if (normalized == 0) {
+            return this;
+        }
+        if (normalized == 90) {
+            int[] out = new int[width * height];
+            int outW = height;
+            int outH = width;
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int dx = height - 1 - y;
+                    int dy = x;
+                    out[dy * outW + dx] = argb[y * width + x];
+                }
+            }
+            return new RgbFrame(out, outW, outH);
+        }
+        if (normalized == 180) {
+            int[] out = new int[width * height];
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int dx = width - 1 - x;
+                    int dy = height - 1 - y;
+                    out[dy * width + dx] = argb[y * width + x];
+                }
+            }
+            return new RgbFrame(out, width, height);
+        }
+        if (normalized == 270) {
+            int[] out = new int[width * height];
+            int outW = height;
+            int outH = width;
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int dx = y;
+                    int dy = width - 1 - x;
+                    out[dy * outW + dx] = argb[y * width + x];
+                }
+            }
+            return new RgbFrame(out, outW, outH);
+        }
+        return this;
+    }
+
     public int get(int x, int y) {
         return argb[y * width + x];
     }
