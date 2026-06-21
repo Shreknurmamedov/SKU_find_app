@@ -51,6 +51,35 @@ python3 -m ml.mine_product_guard_crops \
 `product_guard_positive` / `product_guard_negative`; сырые buckets нельзя
 автоматически считать истиной.
 
+## Feedback с планшета
+
+В live-режиме Android-приложение хранит последние видимые рамки около 8 секунд.
+Менеджеру не нужно попадать пальцем по самой рамке: кнопки `НЕ ТОВАР` и
+`ЭТО ТОВАР` сохраняют последний подходящий crop даже после исчезновения рамки.
+
+Файлы сохраняются внутри приложения:
+
+```text
+/sdcard/Android/data/com.utake.skufind/files/feedback/hard_negative
+/sdcard/Android/data/com.utake.skufind/files/feedback/product
+```
+
+Каждый пример состоит из `.jpg` и соседнего `.json` с confidence детектора,
+`guard_productness`, bbox и состоянием качества. Забрать с планшета:
+
+```bash
+mkdir -p var/tablet/feedback_device
+adb pull /sdcard/Android/data/com.utake.skufind/files/feedback \
+  var/tablet/feedback_device
+```
+
+После визуальной проверки чистые `.jpg` можно перенести в:
+
+```text
+var/tablet/product_guard_negative
+var/tablet/product_guard_positive
+```
+
 Датасет создаётся в формате ImageFolder:
 
 ```text

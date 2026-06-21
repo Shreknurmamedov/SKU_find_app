@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.RectF;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -51,6 +53,7 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -73,9 +76,12 @@ public class MainActivity extends ComponentActivity {
     private TextView selectedFilesText;
     private TextView resultText;
     private TextView liveStatusText;
+    private TextView feedbackText;
     private Button uploadButton;
     private Button scanButton;
     private Button recordButton;
+    private Button markNotProductButton;
+    private Button markProductButton;
     private PreviewView previewView;
     private ProductOverlayView overlayView;
     private CoverageOverlayView coverageView;
@@ -85,6 +91,7 @@ public class MainActivity extends ComponentActivity {
     private final Executor mainExecutor = command -> mainHandler.post(command);
     private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
     private final LiveCaptureTracker liveCaptureTracker = new LiveCaptureTracker();
+    private final List<FeedbackCandidate> feedbackBuffer = new ArrayList<>();
     private TFLiteProductAnalyzer tfliteAnalyzer;
     private TFLiteProductGuard productGuard;
     private ExecutorService cameraExecutor;
@@ -112,6 +119,12 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_LOW_DETAIL_STD_MAX = 24f;
     private static final float LIVE_GUARD_MIN_PRODUCT = 0.75f;
     private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.88f;
+    private static final long FEEDBACK_BUFFER_MS = 8000L;
+    private static final int FEEDBACK_MAX_CANDIDATES = 24;
+    private static final int FEEDBACK_MAX_CROP_SIDE = 512;
+    private int savedFeedbackNegative = 0;
+    private int savedFeedbackPositive = 0;
+    private long lastFeedbackUiRefreshMs = 0L;
 
     // ---- coverage scan mode ----
     private final ScanGrid scanGrid = new ScanGrid();
@@ -288,6 +301,31 @@ public class MainActivity extends ComponentActivity {
         resetButton.setOnClickListener(view -> resetScan());
         scanButtons.addView(resetButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
+        LinearLayout feedbackButtons = new LinearLayout(this);
+        feedbackButtons.setOrientation(LinearLayout.HORIZONTAL);
+        controls.addView(feedbackButtons, matchWrap());
+
+        markNotProductButton = new Button(this);
+        markNotProductButton.setText("НЕ ТОВАР");
+        markNotProductButton.setEnabled(false);
+        markNotProductButton.setOnClickListener(view -> saveBufferedFeedback(false));
+        feedbackButtons.addView(markNotProductButton,
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        markProductButton = new Button(this);
+        markProductButton.setText("ЭТО ТОВАР");
+        markProductButton.setEnabled(false);
+        markProductButton.setOnClickListener(view -> saveBufferedFeedback(true));
+        feedbackButtons.addView(markProductButton,
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        feedbackText = new TextView(this);
+        feedbackText.setText("Буфер разметки пуст");
+        feedbackText.setTextSize(13);
+        feedbackText.setTextColor(0xFF333333);
+        feedbackText.setPadding(0, 0, 0, dp(8));
+        controls.addView(feedbackText);
+
         serverUrlInput = new EditText(this);
         serverUrlInput.setSingleLine(true);
         serverUrlInput.setHint("Backend URL");
@@ -416,6 +454,7 @@ public class MainActivity extends ComponentActivity {
         overlayView.setDetections(new ArrayList<>());
         overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Камера остановлена");
         liveCaptureTracker.reset();
+        clearFeedbackBuffer();
         liveStatusText.setText("Камера остановлена.");
     }
 
@@ -499,6 +538,7 @@ public class MainActivity extends ComponentActivity {
             List<ProductDetection> scored = scoreLiveQuality(frame, raw);
             LiveCaptureTracker.Result tracked = liveCaptureTracker.update(scored);
             detections = tracked.visibleDetections;
+            bufferFeedbackCandidates(frame, detections);
             capturedMarks = tracked.capturedBoxes;
             int blur = 0;
             int closer = 0;
@@ -534,6 +574,7 @@ public class MainActivity extends ComponentActivity {
             detections = productAnalyzer.analyze(null);
             capturedMarks = new ArrayList<>();
             statusText = "Демо-режим (модель не загрузилась)";
+            clearFeedbackBuffer();
             runOnUiThread(() -> overlayView.setLiveSummary(
                     detections.size(), 0, detections.size(), 0, 0, detections.size(),
                     "Демо-режим: проверьте модель"));
@@ -542,6 +583,206 @@ public class MainActivity extends ComponentActivity {
             overlayView.setCapturedMarks(capturedMarks);
             overlayView.setDetections(detections);
             liveStatusText.setText(statusText);
+        });
+    }
+
+    private void bufferFeedbackCandidates(RgbFrame frame, List<ProductDetection> detections) {
+        long now = System.currentTimeMillis();
+        int count;
+        long ageMs;
+        synchronized (feedbackBuffer) {
+            pruneFeedbackBufferLocked(now);
+            for (ProductDetection detection : detections) {
+                FeedbackCandidate candidate = makeFeedbackCandidate(frame, detection, now);
+                if (candidate != null) {
+                    feedbackBuffer.add(candidate);
+                }
+            }
+            while (feedbackBuffer.size() > FEEDBACK_MAX_CANDIDATES) {
+                feedbackBuffer.remove(0);
+            }
+            count = feedbackBuffer.size();
+            ageMs = count == 0 ? 0 : now - feedbackBuffer.get(count - 1).timeMs;
+        }
+        if (now - lastFeedbackUiRefreshMs > 500L) {
+            lastFeedbackUiRefreshMs = now;
+            refreshFeedbackUi(count, ageMs);
+        }
+    }
+
+    private FeedbackCandidate makeFeedbackCandidate(RgbFrame frame, ProductDetection detection,
+                                                    long timeMs) {
+        RectPixels px = toPixels(detection.normalizedBounds, frame.width, frame.height);
+        int width = px.right - px.left;
+        int height = px.bottom - px.top;
+        if (width < 8 || height < 8) {
+            return null;
+        }
+        int outWidth = width;
+        int outHeight = height;
+        int maxSide = Math.max(width, height);
+        if (maxSide > FEEDBACK_MAX_CROP_SIDE) {
+            float scale = FEEDBACK_MAX_CROP_SIDE / (float) maxSide;
+            outWidth = Math.max(1, Math.round(width * scale));
+            outHeight = Math.max(1, Math.round(height * scale));
+        }
+        int[] crop = new int[outWidth * outHeight];
+        for (int y = 0; y < outHeight; y++) {
+            int srcY = px.top + Math.min(height - 1, y * height / outHeight);
+            int srcRow = srcY * frame.width;
+            int dstRow = y * outWidth;
+            for (int x = 0; x < outWidth; x++) {
+                int srcX = px.left + Math.min(width - 1, x * width / outWidth);
+                crop[dstRow + x] = frame.argb[srcRow + srcX];
+            }
+        }
+        return new FeedbackCandidate(crop, outWidth, outHeight, new RectF(detection.normalizedBounds),
+                detection.confidence, detection.productness, detection.sharpness,
+                detection.areaFraction, detection.qualityState, timeMs);
+    }
+
+    private void pruneFeedbackBufferLocked(long now) {
+        for (int i = feedbackBuffer.size() - 1; i >= 0; i--) {
+            if (now - feedbackBuffer.get(i).timeMs > FEEDBACK_BUFFER_MS) {
+                feedbackBuffer.remove(i);
+            }
+        }
+    }
+
+    private void clearFeedbackBuffer() {
+        boolean hadCandidates;
+        synchronized (feedbackBuffer) {
+            hadCandidates = !feedbackBuffer.isEmpty();
+            feedbackBuffer.clear();
+        }
+        if (hadCandidates) {
+            refreshFeedbackUi(0, 0);
+        }
+    }
+
+    private FeedbackCandidate latestFeedbackCandidate() {
+        long now = System.currentTimeMillis();
+        synchronized (feedbackBuffer) {
+            pruneFeedbackBufferLocked(now);
+            if (feedbackBuffer.isEmpty()) {
+                return null;
+            }
+            long newest = feedbackBuffer.get(feedbackBuffer.size() - 1).timeMs;
+            FeedbackCandidate best = null;
+            float bestScore = -1f;
+            for (FeedbackCandidate candidate : feedbackBuffer) {
+                if (newest - candidate.timeMs > 1400L) {
+                    continue;
+                }
+                float score = candidate.rankScore();
+                if (best == null || score > bestScore) {
+                    best = candidate;
+                    bestScore = score;
+                }
+            }
+            return best == null ? feedbackBuffer.get(feedbackBuffer.size() - 1) : best;
+        }
+    }
+
+    private void saveBufferedFeedback(boolean product) {
+        FeedbackCandidate candidate = latestFeedbackCandidate();
+        if (candidate == null) {
+            refreshFeedbackUi(0, 0);
+            return;
+        }
+        try {
+            File image = writeFeedbackCandidate(candidate, product);
+            if (product) {
+                savedFeedbackPositive++;
+            } else {
+                savedFeedbackNegative++;
+            }
+            synchronized (feedbackBuffer) {
+                feedbackBuffer.clear();
+            }
+            markNotProductButton.setEnabled(false);
+            markProductButton.setEnabled(false);
+            String label = product ? "товар" : "не товар";
+            feedbackText.setText("Сохранено: " + label
+                    + "\nВсего: не товар " + savedFeedbackNegative
+                    + ", товар " + savedFeedbackPositive);
+            resultText.setText("Feedback сохранён: " + image.getParentFile().getName()
+                    + "/" + image.getName());
+        } catch (Exception exception) {
+            feedbackText.setText("Не удалось сохранить feedback: " + exception.getMessage());
+        }
+    }
+
+    private File writeFeedbackCandidate(FeedbackCandidate candidate, boolean product)
+            throws Exception {
+        File baseDir = getExternalFilesDir(null);
+        if (baseDir == null) {
+            baseDir = getFilesDir();
+        }
+        File dir = new File(baseDir, product ? "feedback/product" : "feedback/hard_negative");
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IllegalStateException("cannot create " + dir.getAbsolutePath());
+        }
+
+        String stem = String.format(Locale.US, "%s_%d_c%.2f_g%.2f",
+                product ? "product" : "hardneg",
+                candidate.timeMs,
+                candidate.confidence,
+                candidate.productness);
+        File image = new File(dir, stem + ".jpg");
+        Bitmap bitmap = Bitmap.createBitmap(candidate.argb, candidate.width, candidate.height,
+                Bitmap.Config.ARGB_8888);
+        try (FileOutputStream output = new FileOutputStream(image)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                throw new IllegalStateException("jpeg encode failed");
+            }
+        } finally {
+            bitmap.recycle();
+        }
+
+        JSONObject meta = new JSONObject();
+        meta.put("label", product ? "product" : "hard_negative");
+        meta.put("timestamp_ms", candidate.timeMs);
+        meta.put("detector_confidence", candidate.confidence);
+        meta.put("guard_productness", candidate.productness);
+        meta.put("sharpness", candidate.sharpness);
+        meta.put("area_fraction", candidate.areaFraction);
+        meta.put("quality_state", candidate.qualityState);
+        meta.put("bbox_left", candidate.bounds.left);
+        meta.put("bbox_top", candidate.bounds.top);
+        meta.put("bbox_right", candidate.bounds.right);
+        meta.put("bbox_bottom", candidate.bounds.bottom);
+        meta.put("store_name", storeNameInput == null ? "" : storeNameInput.getText().toString());
+        meta.put("guard_status", guardStatus());
+        File sidecar = new File(dir, stem + ".json");
+        try (FileOutputStream output = new FileOutputStream(sidecar)) {
+            output.write(meta.toString(2).getBytes(StandardCharsets.UTF_8));
+        }
+        return image;
+    }
+
+    private void refreshFeedbackUi(int count, long newestAgeMs) {
+        runOnUiThread(() -> {
+            boolean hasCandidate = count > 0;
+            if (markNotProductButton != null) {
+                markNotProductButton.setEnabled(hasCandidate);
+            }
+            if (markProductButton != null) {
+                markProductButton.setEnabled(hasCandidate);
+            }
+            if (feedbackText != null) {
+                if (hasCandidate) {
+                    feedbackText.setText(String.format(Locale.US,
+                            "Последняя рамка: %.1fс · буфер %d · сохранено %d/%d",
+                            newestAgeMs / 1000f,
+                            count,
+                            savedFeedbackNegative,
+                            savedFeedbackPositive));
+                } else {
+                    feedbackText.setText("Буфер разметки пуст"
+                            + " · сохранено " + savedFeedbackNegative + "/" + savedFeedbackPositive);
+                }
+            }
         });
     }
 
@@ -775,10 +1016,46 @@ public class MainActivity extends ComponentActivity {
 
     private void resetLiveCapture() {
         liveCaptureTracker.reset();
+        clearFeedbackBuffer();
         overlayView.setCapturedMarks(new ArrayList<>());
         overlayView.setDetections(new ArrayList<>());
         overlayView.setLiveSummary(0, 0, 0, 0, 0, 0, "Наведите камеру на полку");
         liveStatusText.setText("Память live-съёмки сброшена.");
+    }
+
+    private static class FeedbackCandidate {
+        final int[] argb;
+        final int width;
+        final int height;
+        final RectF bounds;
+        final float confidence;
+        final float productness;
+        final float sharpness;
+        final float areaFraction;
+        final int qualityState;
+        final long timeMs;
+
+        FeedbackCandidate(int[] argb, int width, int height, RectF bounds,
+                          float confidence, float productness, float sharpness,
+                          float areaFraction, int qualityState, long timeMs) {
+            this.argb = argb;
+            this.width = width;
+            this.height = height;
+            this.bounds = bounds;
+            this.confidence = confidence;
+            this.productness = productness;
+            this.sharpness = sharpness;
+            this.areaFraction = areaFraction;
+            this.qualityState = qualityState;
+            this.timeMs = timeMs;
+        }
+
+        float rankScore() {
+            return confidence * 0.40f
+                    + productness * 0.35f
+                    + Math.min(1f, areaFraction * 5f) * 0.20f
+                    + Math.min(1f, sharpness) * 0.05f;
+        }
     }
 
     private static class RectPixels {

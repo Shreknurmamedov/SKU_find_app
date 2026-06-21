@@ -624,3 +624,44 @@ python3 -m ml.train_product_guard \
 установить на Samsung Tab A9. После установки повторить live-тест в портрете:
 проверить, что пол/стены/двери/вода не обводятся, а товары из `м9`/реальной ТТ
 подсвечиваются.
+
+---
+
+## 18. Сессия 2026-06-21 (Codex): live feedback без тапа по рамке
+
+Проблема: менеджер не успевает нажимать по самой live-рамке, потому что боксы
+появляются и исчезают слишком быстро. При этом нужны hard negatives/positives
+прямо с планшета для следующего дообучения `product_guard_cls`.
+
+Сделано:
+- в Android live UI добавлены крупные кнопки `НЕ ТОВАР` и `ЭТО ТОВАР`;
+- приложение буферизует последние видимые `LiveCaptureTracker.visibleDetections`
+  около 8 секунд, так что нажимать нужно не по рамке, а по кнопке;
+- сохраняется crop последней подходящей рамки, а не весь кадр; длинная сторона
+  crop-а ограничена 512 px, чтобы не раздувать память планшета;
+- рядом с `.jpg` пишется `.json` с label, timestamp, detector confidence,
+  `guard_productness`, bbox, sharpness, area fraction и `quality_state`;
+- после сохранения буфер очищается, чтобы случайно не записать один и тот же crop
+  несколько раз.
+
+Пути на устройстве:
+```text
+/sdcard/Android/data/com.utake.skufind/files/feedback/hard_negative
+/sdcard/Android/data/com.utake.skufind/files/feedback/product
+```
+
+Забрать данные:
+```bash
+mkdir -p var/tablet/feedback_device
+adb pull /sdcard/Android/data/com.utake.skufind/files/feedback \
+  var/tablet/feedback_device
+```
+
+Проверки:
+- `git diff --check` — OK;
+- локальная Android-сборка не запущена: на машине нет `gradle`/`gradlew`.
+
+Следующий шаг:
+закоммитить/push, дождаться CI APK, установить на Samsung Tab A9 и в офисном
+проходе нажимать `НЕ ТОВАР` на ложных рамках стульев/дверей/стен и `ЭТО ТОВАР`
+на реальных товарах, которые guard слишком сомнительно оценивает.
