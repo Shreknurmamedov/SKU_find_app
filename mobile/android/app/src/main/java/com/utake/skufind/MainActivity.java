@@ -117,8 +117,7 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_LARGE_BOX_AREA = 0.12f;
     private static final float LIVE_LARGE_BOX_MIN_EDGE_DENSITY = 0.055f;
     private static final float LIVE_LOW_DETAIL_STD_MAX = 24f;
-    private static final float LIVE_GUARD_MIN_PRODUCT = 0.75f;
-    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.88f;
+    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.70f;
     private static final long FEEDBACK_BUFFER_MS = 8000L;
     private static final int FEEDBACK_MAX_CANDIDATES = 24;
     private static final int FEEDBACK_MAX_CROP_SIDE = 512;
@@ -538,7 +537,7 @@ public class MainActivity extends ComponentActivity {
             List<ProductDetection> scored = scoreLiveQuality(frame, raw);
             LiveCaptureTracker.Result tracked = liveCaptureTracker.update(scored);
             detections = tracked.visibleDetections;
-            bufferFeedbackCandidates(frame, detections);
+            bufferFeedbackCandidates(frame, tracked.currentDetections);
             capturedMarks = tracked.capturedBoxes;
             int blur = 0;
             int closer = 0;
@@ -813,9 +812,6 @@ public class MainActivity extends ComponentActivity {
             if (productGuard != null && productGuard.isReady()) {
                 productness = productGuard.productProbability(
                         frame, px.left, px.top, px.right, px.bottom);
-                if (productness < LIVE_GUARD_MIN_PRODUCT) {
-                    continue;
-                }
             }
             float sharp = FrameQuality.sharpScore(luma);
             boolean tooFar = area < LIVE_MIN_AREA_READABLE || minSide < LIVE_MIN_SIDE_READABLE;

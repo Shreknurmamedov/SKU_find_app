@@ -24,6 +24,7 @@ public class ProductDetection {
      */
     public float[] signature;
     public float productness = 1f;
+    public boolean stale = false;
 
     public ProductDetection(RectF normalizedBounds, boolean recognized, String label, float confidence) {
         this(normalizedBounds, recognized, label, confidence,

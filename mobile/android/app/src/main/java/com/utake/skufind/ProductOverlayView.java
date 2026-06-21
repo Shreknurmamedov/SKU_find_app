@@ -98,9 +98,9 @@ public class ProductOverlayView extends View {
         drawSummary(canvas, width);
         for (ProductDetection detection : detections) {
             int color = colorFor(detection);
-            strokePaint.setColor(color);
-            fillPaint.setColor(withAlpha(color, 52));
-            textBackgroundPaint.setColor(withAlpha(color, 210));
+            strokePaint.setColor(withAlpha(color, detection.stale ? 165 : 255));
+            fillPaint.setColor(withAlpha(color, detection.stale ? 28 : 52));
+            textBackgroundPaint.setColor(withAlpha(color, detection.stale ? 170 : 210));
 
             RectF bounds = new RectF(
                     detection.normalizedBounds.left * width,
@@ -138,12 +138,25 @@ public class ProductOverlayView extends View {
             return;
         }
         int green = Color.rgb(36, 182, 103);
-        fillPaint.setColor(withAlpha(green, 235));
-        strokePaint.setColor(Color.WHITE);
-        strokePaint.setStrokeWidth(4f);
         for (RectF nb : capturedMarks) {
-            float cx = (nb.left + nb.right) * 0.5f * width;
-            float cy = (nb.top + nb.bottom) * 0.5f * height;
+            RectF bounds = new RectF(
+                    nb.left * width,
+                    nb.top * height,
+                    nb.right * width,
+                    nb.bottom * height
+            );
+            fillPaint.setColor(withAlpha(green, 34));
+            strokePaint.setColor(withAlpha(green, 230));
+            strokePaint.setStrokeWidth(5f);
+            Path path = segmentedPath(bounds);
+            canvas.drawPath(path, fillPaint);
+            canvas.drawPath(path, strokePaint);
+
+            float cx = (bounds.left + bounds.right) * 0.5f;
+            float cy = (bounds.top + bounds.bottom) * 0.5f;
+            fillPaint.setColor(withAlpha(green, 235));
+            strokePaint.setColor(Color.WHITE);
+            strokePaint.setStrokeWidth(4f);
             canvas.drawCircle(cx, cy, 17f, fillPaint);
             Path check = new Path();
             check.moveTo(cx - 8f, cy + 1f);
@@ -261,13 +274,7 @@ public class ProductOverlayView extends View {
         if (detection.qualityState == ProductDetection.STATE_GOOD) {
             return Color.rgb(36, 182, 103);
         }
-        if (detection.qualityState == ProductDetection.STATE_FAR) {
-            return Color.rgb(240, 137, 35);
-        }
-        if (detection.qualityState == ProductDetection.STATE_BLUR) {
-            return Color.rgb(220, 55, 55);
-        }
-        return Color.rgb(45, 120, 220);
+        return Color.rgb(220, 55, 55);
     }
 
     private Path segmentedPath(RectF bounds) {

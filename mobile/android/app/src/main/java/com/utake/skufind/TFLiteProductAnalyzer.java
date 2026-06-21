@@ -27,7 +27,7 @@ public class TFLiteProductAnalyzer {
     // a clear Huter box scored only ~0.23-0.45 on v7 vs ~0.56-0.63 on v6).
     // The backend can stay recall-first; live feedback must be conservative
     // because false boxes become "captured" noise for the manager.
-    private static final float CONF_THRESHOLD = 0.55f;
+    private static final float CONF_THRESHOLD = 0.60f;
     private static final float GREEN_CONF = 0.70f;
     private static final float IOU_THRESHOLD = 0.5f;
     private static final int MAX_DETECTIONS = 100;

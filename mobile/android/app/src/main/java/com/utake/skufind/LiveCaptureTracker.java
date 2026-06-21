@@ -27,6 +27,8 @@ public class LiveCaptureTracker {
     private static final float MATCH_IOU = 0.28f;        // same product, frame-to-frame
     private static final float APPEARANCE_MATCH = 0.62f; // re-id after the box moved/left
     private static final int GOOD_FRAMES_TO_CAPTURE = 8;
+    private static final int KEEP_VISIBLE_MISSED = 12;
+    private static final int KEEP_CAPTURED_VISIBLE_MISSED = 90;
     private static final int DROP_MISSED_AFTER = 40;
     private static final int KEEP_CAPTURED_MISSED = 600; // remember captured items much longer
     private static final int MAX_TRACKS = 240;           // bound memory on long scans
@@ -104,25 +106,27 @@ public class LiveCaptureTracker {
         }
 
         List<ProductDetection> visible = new ArrayList<>();
+        List<ProductDetection> currentForFeedback = new ArrayList<>();
         List<RectF> capturedBoxes = new ArrayList<>();
-        for (int di = 0; di < n; di++) {
-            if (!owner[di].captured) {
-                visible.add(detections.get(di));
-            }
-        }
         int captured = 0;
         int needsRetake = 0;
         for (Track t : tracks) {
             if (t.captured) {
                 captured++;
-                if (t.updated) {
+                if (t.missedFrames <= KEEP_CAPTURED_VISIBLE_MISSED) {
                     capturedBoxes.add(new RectF(t.box));
                 }
-            } else if (t.updated) {
+            } else if (t.lastDetection != null && t.missedFrames <= KEEP_VISIBLE_MISSED) {
+                ProductDetection display = t.displayDetection();
+                visible.add(display);
                 needsRetake++;
+                if (t.updated) {
+                    currentForFeedback.add(display);
+                }
             }
         }
-        return new Result(visible, capturedBoxes, captured, needsRetake, tracks.size());
+        return new Result(visible, currentForFeedback, capturedBoxes, captured, needsRetake,
+                tracks.size());
     }
 
     public void reset() {
@@ -155,14 +159,17 @@ public class LiveCaptureTracker {
 
     public static class Result {
         public final List<ProductDetection> visibleDetections;
+        public final List<ProductDetection> currentDetections;
         public final List<RectF> capturedBoxes;
         public final int capturedCount;
         public final int needsRetakeCount;
         public final int trackedCount;
 
-        Result(List<ProductDetection> visibleDetections, List<RectF> capturedBoxes,
-               int capturedCount, int needsRetakeCount, int trackedCount) {
+        Result(List<ProductDetection> visibleDetections, List<ProductDetection> currentDetections,
+               List<RectF> capturedBoxes, int capturedCount, int needsRetakeCount,
+               int trackedCount) {
             this.visibleDetections = visibleDetections;
+            this.currentDetections = currentDetections;
             this.capturedBoxes = capturedBoxes;
             this.capturedCount = capturedCount;
             this.needsRetakeCount = needsRetakeCount;
@@ -179,6 +186,7 @@ public class LiveCaptureTracker {
         boolean captured = false;
         boolean updated = false;
         float bestConfidence = 0f;
+        ProductDetection lastDetection;
 
         Track(int id, RectF box) {
             this.id = id;
@@ -210,6 +218,22 @@ public class LiveCaptureTracker {
             if (goodFrames >= GOOD_FRAMES_TO_CAPTURE) {
                 captured = true;
             }
+            lastDetection = cloneDetection(detection, box, false);
+        }
+
+        ProductDetection displayDetection() {
+            return cloneDetection(lastDetection, box, !updated);
+        }
+
+        private static ProductDetection cloneDetection(ProductDetection src, RectF box,
+                                                       boolean stale) {
+            ProductDetection out = new ProductDetection(new RectF(box), src.recognized,
+                    src.label, src.confidence, src.qualityState, src.sharpness,
+                    src.areaFraction);
+            out.productness = src.productness;
+            out.signature = src.signature;
+            out.stale = stale;
+            return out;
         }
 
         private static float[] blend(float[] prev, float[] next) {
