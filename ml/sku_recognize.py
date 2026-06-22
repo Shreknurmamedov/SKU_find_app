@@ -1,10 +1,10 @@
 """Stage 2: recognize the SKU on a single product crop.
 
-Pipeline: OCR the crop -> normalize text -> match against the Utake catalog
-(data/catalog/own_products.csv) by model code, then by brand. The catalog
-already carries brand, model and category, so a match yields all three plus
-the own-brand flag and a confidence. No per-SKU training required; adding a
-new product only means adding a catalog row.
+Pipeline: OCR the crop -> normalize text -> match against the product catalog
+(data/catalog/reference_dataset_all/training_images.csv, with own_products.csv
+as a fallback) by model code, article, then brand. The catalog carries own and
+competitor brands, model and category, so a match yields all three plus the
+own-brand flag and a confidence.
 
 Public API:
     from ml.sku_recognize import Recognizer
@@ -33,7 +33,9 @@ import numpy as np
 DEFAULT_INDEX = Path("data/catalog/reference_index_yolo11n.npz")
 DEFAULT_METADATA = Path("data/catalog/reference_index_yolo11n.jsonl")
 
-CATALOG_CSV = Path("data/catalog/own_products.csv")
+REFERENCE_CATALOG_CSV = Path("data/catalog/reference_dataset_all/training_images.csv")
+OWN_CATALOG_CSV = Path("data/catalog/own_products.csv")
+CATALOG_CSV = REFERENCE_CATALOG_CSV
 
 # Cyrillic letters that share a glyph with a Latin one. We canonicalize BOTH
 # the catalog and the OCR text through this map so "АВР" (Cyrillic) and an OCR
@@ -173,8 +175,12 @@ class Recognizer:
         self.entries = self._load_catalog(catalog_csv)
         # brand canon -> display name (longest catalog spelling wins)
         self.brand_by_canon: dict[str, str] = {}
+        self.brand_own_by_canon: dict[str, bool] = {}
         for e in self.entries:
             self.brand_by_canon.setdefault(e.brand_canon, e.brand)
+            self.brand_own_by_canon[e.brand_canon] = (
+                self.brand_own_by_canon.get(e.brand_canon, False) or e.is_own
+            )
         self._brand_canons = sorted(self.brand_by_canon.items(), key=lambda kv: -len(kv[0]))
         # model key -> entry, longest keys first so the most specific match wins.
         # Model codes are safe to find as substrings in compact OCR text
@@ -215,28 +221,50 @@ class Recognizer:
 
     @staticmethod
     def _load_catalog(path: Path) -> list[CatalogEntry]:
+        if not path.exists() and path == REFERENCE_CATALOG_CSV:
+            path = OWN_CATALOG_CSV
         entries: list[CatalogEntry] = []
         with open(path, newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+            if reader.fieldnames and "image_path" in reader.fieldnames:
+                rows = Recognizer._dedupe_reference_rows(rows)
+            for row in rows:
                 brand = (row.get("brand_name") or "").strip()
                 if not brand or brand == "-":
                     continue
                 mkeys = set(model_keys(row.get("model_name", "")))
-                akeys = set(article_keys(row.get("article_codes", "")))
-                for alias in (row.get("aliases") or "").split("|"):
+                article_codes = (row.get("article_codes") or row.get("sku") or "").strip()
+                akeys = set(article_keys(article_codes))
+                aliases = "|".join(
+                    str(row.get(name) or "")
+                    for name in ("aliases", "source_name", "catalog_sku_id", "product_id", "sku")
+                )
+                for alias in aliases.split("|"):
                     if looks_like_article(alias):
                         akeys.update(article_keys(alias))
                     else:
                         mkeys.update(model_keys(alias))
                 keys = mkeys | akeys
+                dataset_role = (row.get("dataset_role") or "").strip().lower()
+                is_own = (
+                    (row.get("is_own_brand", "").strip().lower() == "true")
+                    or dataset_role == "own_target"
+                )
                 entries.append(
                     CatalogEntry(
-                        sku_id=row.get("sku_id", ""),
+                        sku_id=(
+                            row.get("sku_id")
+                            or row.get("catalog_sku_id")
+                            or row.get("product_id")
+                            or row.get("sku")
+                            or ""
+                        ),
                         brand=brand,
-                        is_own=(row.get("is_own_brand", "").strip().lower() == "true"),
+                        is_own=is_own,
                         category=(row.get("category") or "").strip(),
                         model=(row.get("model_name") or "").strip(),
-                        article_codes=(row.get("article_codes") or "").strip(),
+                        article_codes=article_codes,
                         model_keys=tuple(sorted(mkeys)),
                         article_keys=tuple(sorted(akeys)),
                         keys=tuple(sorted(keys)),
@@ -244,6 +272,28 @@ class Recognizer:
                     )
                 )
         return entries
+
+    @staticmethod
+    def _dedupe_reference_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+        by_product: dict[str, dict[str, str]] = {}
+        for row in rows:
+            key = (
+                row.get("catalog_sku_id")
+                or row.get("product_id")
+                or row.get("sku")
+                or f"{row.get('brand_id', '')}|{row.get('model_name', '')}"
+            )
+            current = by_product.get(key)
+            if current is None:
+                by_product[key] = row
+                continue
+            # Prefer the row with more catalog text; image rows for the same
+            # product can differ only by source image metadata.
+            current_score = sum(bool(current.get(name)) for name in ("model_name", "category", "sku"))
+            new_score = sum(bool(row.get(name)) for name in ("model_name", "category", "sku"))
+            if new_score > current_score:
+                by_product[key] = row
+        return list(by_product.values())
 
     # ---- OCR ---------------------------------------------------------------
     def _ensure_reader(self):
@@ -380,7 +430,7 @@ class Recognizer:
         # a model. Use the hint only to report brand + product category, which is
         # far more robust than the exact SKU on a blurry/partial code.
         method_brand = "brand_text"
-        is_own_brand = True
+        is_own_brand = self.brand_own_by_canon.get(brand_canon or "", False)
         weak = self._weak_specific_hint(comp, token_articles) if comp else None
         if weak is not None:
             entry, key = weak
