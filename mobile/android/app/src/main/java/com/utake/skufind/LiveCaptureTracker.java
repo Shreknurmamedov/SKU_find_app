@@ -27,8 +27,8 @@ public class LiveCaptureTracker {
     private static final float MATCH_IOU = 0.28f;        // same product, frame-to-frame
     private static final float APPEARANCE_MATCH = 0.62f; // re-id after the box moved/left
     private static final int GOOD_FRAMES_TO_CAPTURE = 8;
-    private static final int KEEP_VISIBLE_MISSED = 12;
-    private static final int KEEP_CAPTURED_VISIBLE_MISSED = 90;
+    private static final int KEEP_VISIBLE_MISSED = 4;
+    private static final int CAPTURE_CONFIRM_FRAMES = 18;
     private static final int DROP_MISSED_AFTER = 40;
     private static final int KEEP_CAPTURED_MISSED = 600; // remember captured items much longer
     private static final int MAX_TRACKS = 240;           // bound memory on long scans
@@ -42,6 +42,9 @@ public class LiveCaptureTracker {
         for (Track t : tracks) {
             t.updated = false;
             t.missedFrames++;
+            if (t.captureConfirmFrames > 0) {
+                t.captureConfirmFrames--;
+            }
         }
 
         // Greedy one-to-one assignment: a detection binds to an existing track if
@@ -113,7 +116,7 @@ public class LiveCaptureTracker {
         for (Track t : tracks) {
             if (t.captured) {
                 captured++;
-                if (t.missedFrames <= KEEP_CAPTURED_VISIBLE_MISSED) {
+                if (t.captureConfirmFrames > 0) {
                     capturedBoxes.add(new RectF(t.box));
                 }
             } else if (t.lastDetection != null && t.missedFrames <= KEEP_VISIBLE_MISSED) {
@@ -186,6 +189,7 @@ public class LiveCaptureTracker {
         boolean captured = false;
         boolean updated = false;
         float bestConfidence = 0f;
+        int captureConfirmFrames = 0;
         ProductDetection lastDetection;
 
         Track(int id, RectF box) {
@@ -194,6 +198,7 @@ public class LiveCaptureTracker {
         }
 
         void update(ProductDetection detection) {
+            boolean wasCaptured = captured;
             // Continuous frame: smooth the box. Re-identified after the box moved
             // away (low overlap): snap to the new position so the ✓ doesn't fly
             // across the screen.
@@ -217,6 +222,9 @@ public class LiveCaptureTracker {
             }
             if (goodFrames >= GOOD_FRAMES_TO_CAPTURE) {
                 captured = true;
+            }
+            if (!wasCaptured && captured) {
+                captureConfirmFrames = CAPTURE_CONFIRM_FRAMES;
             }
             lastDetection = cloneDetection(detection, box, false);
         }

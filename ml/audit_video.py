@@ -387,7 +387,9 @@ def audit(video: Path, weights: Path, *, work_dir: Path, reports_dir: Path,
 
     reports_dir.mkdir(parents=True, exist_ok=True)
     (reports_dir / f"audit_{stem}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2))
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     _write_markdown(report, reports_dir / f"audit_{stem}.md")
     print(f"\nreport -> {reports_dir / f'audit_{stem}.md'}")
     print(f"unique_skus={len(sku_presence)} evidence_objects={len(confident)} "
@@ -458,7 +460,7 @@ def _write_markdown(r: dict, path: Path) -> None:
               for it in r["needs_review"]]
     else:
         L += ["_Нет — все объекты определены уверенно._"]
-    path.write_text("\n".join(L) + "\n")
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
 def main() -> None:

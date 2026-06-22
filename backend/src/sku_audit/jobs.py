@@ -104,6 +104,16 @@ class JobStore:
             job_id=job_id,
         )
 
+    def save_feedback_bytes(self, job_id: str, files: Iterable[tuple[str, bytes]]) -> list[Path]:
+        feedback_dir = self.uploads_dir / job_id / "feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for filename, content in files:
+            destination = _unique_destination(feedback_dir / _safe_filename(filename))
+            destination.write_bytes(content)
+            paths.append(destination)
+        return paths
+
     def get(self, job_id: str) -> ProcessingJob:
         path = self.jobs_dir / job_id / "job.json"
         if not path.exists():
@@ -315,3 +325,15 @@ def _media_from_dict(payload: dict[str, Any]) -> MediaInspection:
 def _safe_filename(filename: str) -> str:
     safe = "".join(char if char.isalnum() or char in ".-_" else "_" for char in filename)
     return safe or "upload.bin"
+
+
+def _unique_destination(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for index in range(1, 10000):
+        candidate = path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"cannot choose unique filename for {path}")

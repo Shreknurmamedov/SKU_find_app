@@ -76,6 +76,7 @@ def create_job_from_local(request: LocalJobRequest) -> dict:
 async def upload_job(
     store_name: str | None = Form(default=None),
     files: list[UploadFile] = File(...),
+    feedback_files: list[UploadFile] | None = File(default=None),
 ) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -87,7 +88,14 @@ async def upload_job(
         payloads.append((file.filename or "upload.bin", content))
     if not payloads:
         raise HTTPException(status_code=400, detail="All uploaded files were empty")
+    feedback_payloads: list[tuple[str, bytes]] = []
+    for file in feedback_files or []:
+        content = await file.read()
+        if content:
+            feedback_payloads.append((file.filename or "feedback.bin", content))
     job = job_store.save_uploaded_bytes(payloads, store_name=store_name)
+    if feedback_payloads:
+        job_store.save_feedback_bytes(job.job_id, feedback_payloads)
     _start_sku_counting(job.job_id)
     return job.to_dict()
 

@@ -44,6 +44,7 @@ import androidx.camera.video.VideoRecordEvent;
 import androidx.camera.view.PreviewView;
 
 import java.io.File;
+import java.io.FileInputStream;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -92,6 +93,7 @@ public class MainActivity extends ComponentActivity {
     private final DemoProductAnalyzer productAnalyzer = new DemoProductAnalyzer();
     private final LiveCaptureTracker liveCaptureTracker = new LiveCaptureTracker();
     private final List<FeedbackCandidate> feedbackBuffer = new ArrayList<>();
+    private final List<File> pendingFeedbackFiles = new ArrayList<>();
     private TFLiteProductAnalyzer tfliteAnalyzer;
     private TFLiteProductGuard productGuard;
     private ExecutorService cameraExecutor;
@@ -117,7 +119,8 @@ public class MainActivity extends ComponentActivity {
     private static final float LIVE_LARGE_BOX_AREA = 0.12f;
     private static final float LIVE_LARGE_BOX_MIN_EDGE_DENSITY = 0.055f;
     private static final float LIVE_LOW_DETAIL_STD_MAX = 24f;
-    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.70f;
+    private static final float LIVE_GUARD_DISPLAY_PRODUCT = 0.55f;
+    private static final float LIVE_GUARD_CAPTURE_PRODUCT = 0.75f;
     private static final long FEEDBACK_BUFFER_MS = 8000L;
     private static final int FEEDBACK_MAX_CANDIDATES = 24;
     private static final int FEEDBACK_MAX_CROP_SIDE = 512;
@@ -690,7 +693,11 @@ public class MainActivity extends ComponentActivity {
             return;
         }
         try {
-            File image = writeFeedbackCandidate(candidate, product);
+            SavedFeedback saved = writeFeedbackCandidate(candidate, product);
+            synchronized (pendingFeedbackFiles) {
+                pendingFeedbackFiles.add(saved.image);
+                pendingFeedbackFiles.add(saved.sidecar);
+            }
             if (product) {
                 savedFeedbackPositive++;
             } else {
@@ -705,14 +712,14 @@ public class MainActivity extends ComponentActivity {
             feedbackText.setText("Сохранено: " + label
                     + "\nВсего: не товар " + savedFeedbackNegative
                     + ", товар " + savedFeedbackPositive);
-            resultText.setText("Feedback сохранён: " + image.getParentFile().getName()
-                    + "/" + image.getName());
+            resultText.setText("Feedback сохранён: " + saved.image.getParentFile().getName()
+                    + "/" + saved.image.getName());
         } catch (Exception exception) {
             feedbackText.setText("Не удалось сохранить feedback: " + exception.getMessage());
         }
     }
 
-    private File writeFeedbackCandidate(FeedbackCandidate candidate, boolean product)
+    private SavedFeedback writeFeedbackCandidate(FeedbackCandidate candidate, boolean product)
             throws Exception {
         File baseDir = getExternalFilesDir(null);
         if (baseDir == null) {
@@ -757,7 +764,7 @@ public class MainActivity extends ComponentActivity {
         try (FileOutputStream output = new FileOutputStream(sidecar)) {
             output.write(meta.toString(2).getBytes(StandardCharsets.UTF_8));
         }
-        return image;
+        return new SavedFeedback(image, sidecar, product);
     }
 
     private void refreshFeedbackUi(int count, long newestAgeMs) {
@@ -812,6 +819,9 @@ public class MainActivity extends ComponentActivity {
             if (productGuard != null && productGuard.isReady()) {
                 productness = productGuard.productProbability(
                         frame, px.left, px.top, px.right, px.bottom);
+                if (productness < LIVE_GUARD_DISPLAY_PRODUCT) {
+                    continue;
+                }
             }
             float sharp = FrameQuality.sharpScore(luma);
             boolean tooFar = area < LIVE_MIN_AREA_READABLE || minSide < LIVE_MIN_SIDE_READABLE;
@@ -1054,6 +1064,18 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
+    private static class SavedFeedback {
+        final File image;
+        final File sidecar;
+        final boolean product;
+
+        SavedFeedback(File image, File sidecar, boolean product) {
+            this.image = image;
+            this.sidecar = sidecar;
+            this.product = product;
+        }
+    }
+
     private static class RectPixels {
         final int left;
         final int top;
@@ -1190,9 +1212,16 @@ public class MainActivity extends ComponentActivity {
         uploadButton.setEnabled(false);
         resultText.setText("Загрузка...");
 
+        List<Uri> uploadUris = new ArrayList<>(selectedUris);
+        List<File> uploadFeedbackFiles = pendingFeedbackSnapshot();
         new Thread(() -> {
             try {
-                String response = uploadMultipart(serverUrl + "/jobs/upload", storeName, selectedUris);
+                String response = uploadMultipart(
+                        serverUrl + "/jobs/upload",
+                        storeName,
+                        uploadUris,
+                        uploadFeedbackFiles);
+                markFeedbackUploaded(uploadFeedbackFiles);
                 String formatted = formatJobResponse(response);
                 String jobId = new JSONObject(response).optString("job_id", "");
                 runOnUiThread(() -> {
@@ -1283,6 +1312,27 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
+    private List<File> pendingFeedbackSnapshot() {
+        List<File> result = new ArrayList<>();
+        synchronized (pendingFeedbackFiles) {
+            for (File file : pendingFeedbackFiles) {
+                if (file.exists() && file.isFile()) {
+                    result.add(file);
+                }
+            }
+        }
+        return result;
+    }
+
+    private void markFeedbackUploaded(List<File> files) {
+        if (files.isEmpty()) {
+            return;
+        }
+        synchronized (pendingFeedbackFiles) {
+            pendingFeedbackFiles.removeAll(files);
+        }
+    }
+
     private String httpGet(String urlString) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
         connection.setRequestMethod("GET");
@@ -1299,7 +1349,8 @@ public class MainActivity extends ComponentActivity {
         return body;
     }
 
-    private String uploadMultipart(String targetUrl, String storeName, List<Uri> uris) throws Exception {
+    private String uploadMultipart(String targetUrl, String storeName, List<Uri> uris,
+                                   List<File> feedbackFiles) throws Exception {
         String boundary = "SkuFindBoundary" + System.currentTimeMillis();
         HttpURLConnection connection = (HttpURLConnection) new URL(targetUrl).openConnection();
         connection.setRequestMethod("POST");
@@ -1313,6 +1364,9 @@ public class MainActivity extends ComponentActivity {
             writeFormField(output, boundary, "store_name", storeName);
             for (Uri uri : uris) {
                 writeFileField(output, boundary, "files", uri);
+            }
+            for (File file : feedbackFiles) {
+                writeFileField(output, boundary, "feedback_files", file);
             }
             writeString(output, "--" + boundary + "--\r\n");
         }
@@ -1355,6 +1409,38 @@ public class MainActivity extends ComponentActivity {
             if (input == null) {
                 throw new IllegalStateException("Cannot open " + filename);
             }
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+            }
+        }
+        writeString(output, "\r\n");
+    }
+
+    private void writeFileField(OutputStream output, String boundary, String fieldName, File file)
+            throws Exception {
+        String filename = file.getName();
+        String lower = filename.toLowerCase(Locale.US);
+        String mimeType;
+        if (lower.endsWith(".json")) {
+            mimeType = "application/json";
+        } else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+            mimeType = "image/jpeg";
+        } else if (lower.endsWith(".png")) {
+            mimeType = "image/png";
+        } else {
+            mimeType = "application/octet-stream";
+        }
+
+        writeString(output, "--" + boundary + "\r\n");
+        writeString(
+                output,
+                "Content-Disposition: form-data; name=\"" + fieldName + "\"; filename=\""
+                        + filename.replace("\"", "_") + "\"\r\n"
+        );
+        writeString(output, "Content-Type: " + mimeType + "\r\n\r\n");
+        try (InputStream input = new BufferedInputStream(new FileInputStream(file))) {
             byte[] buffer = new byte[64 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
